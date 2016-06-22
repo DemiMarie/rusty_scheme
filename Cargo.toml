@@ -1,0 +1,7 @@
+[package]
+name = "RustyScheme"
+version = "0.1.0"
+authors = ["Demi Marie Obenour <demiobenour@gmail.com>"]
+
+[dependencies]
+libc = "*"
