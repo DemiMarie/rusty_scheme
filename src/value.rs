@@ -14,20 +14,33 @@
 //! |Resources  | As a pointer into a 3-tuple, consisting of a GC header, a pointer to a `struct` that contains an object ID and custom equality, hashing, and other functions, and a pointer into memory not managed by the GC. |
 
 use std::cell::Cell;
-use std::{slice, ptr, mem};
-use alloc::Allocator;
-use std::marker::PhantomData;
-
+use std::mem;
 
 // Same set used by Femtolisp
-pub const NumTag: usize = 0b000;
-pub const RustFuncTag: usize = 0b001;
-pub const FunctionTag: usize = 0b010;
-pub const VectorTag: usize = 0b011;
-pub const NumTag2: usize = 0b100;
-pub const RustDataTag: usize = 0b101;
-pub const SymbolTag: usize = 0b110;
-pub const PairTag: usize = 0b111;
+/// The tag of `fixnum`s
+pub const NUM_TAG: usize = 0b000;
+
+/// The tag of Rust-implemented functions.
+pub const RUST_FUNC_TAG: usize = 0b001;
+
+/// The tag of Scheme-implemented functions.
+pub const FUNCTION_TAG: usize = 0b010;
+
+/// The tag of Scheme vectors, records, and closures.
+pub const VECTOR_TAG: usize = 0b011;
+
+/// The tag of non-`fixnum` immediates, such as the empty list,
+/// end-of-file object, the undefined value, and characters.
+pub const NUM_TAG_2: usize = 0b100;
+
+/// The tag of RustData – Rust values stored on the Scheme heap.
+pub const RUST_DATA_TAG: usize = 0b101;
+
+/// The tag of Symbols.
+pub const SYMBOL_TAG: usize = 0b110;
+
+/// The tag of Pairs
+pub const PAIR_TAG: usize = 0b111;
 
 
 #[cfg(target_pointer_width = "32")]
@@ -36,11 +49,14 @@ pub const SIZEOF_PTR: usize = 4;
 #[cfg(target_pointer_width = "64")]
 pub const SIZEOF_PTR: usize = 8;
 
-pub const SIZEOF_PAIR: usize = (self::SIZEOF_PTR+0b111) & !0b111;
+/// The amount of memory occupied by a pair.
+pub const SIZEOF_PAIR: usize = (3*self::SIZEOF_PTR + 0b111) >> 3;
 
-pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR*8-3);
+/// Bitmask that includes the tag words of an object header.
+pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR*8 - 3);
 
-pub const PAIR_HEADER: usize = !HEADER_TAG | 2;
+/// The header of a pair.
+pub const PAIR_HEADER: usize = HEADER_TAG | SIZEOF_PAIR;
 
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
@@ -56,7 +72,7 @@ pub enum Tags {
 }
 
 
-impl<'a> Value<'a> {
+impl Value {
     #[inline(always)]
     pub fn raw_tag(&self) -> usize {
         self.contents & 0b111
@@ -66,14 +82,14 @@ impl<'a> Value<'a> {
     pub fn tag(&self) -> Tags {
         use self::Tags::*;
         match self.raw_tag() {
-            NumTag => Num,
-            RustFuncTag => RustFunc,
-            FunctionTag => Function,
-            VectorTag => Vector,
-            NumTag2 => Num2,
-            RustDataTag => RustData,
-            SymbolTag => Symbol,
-            PairTag => Pair,
+            NUM_TAG => Num,
+            RUST_FUNC_TAG => RustFunc,
+            FUNCTION_TAG => Function,
+            VECTOR_TAG => Vector,
+            NUM_TAG_2 => Num2,
+            RUST_DATA_TAG => RustData,
+            SYMBOL_TAG => Symbol,
+            PAIR_TAG => Pair,
             _ => unsafe {
                 enum Void {}
                 match mem::transmute::<(),Void>(()) {}
@@ -119,7 +135,6 @@ macro_rules! size_of {
         ::std::mem::size_of::<$ty>()
     }
 }
-use alloc::Heap;
 
 /// A Scheme value.
 ///
@@ -127,9 +142,8 @@ use alloc::Heap;
 /// the heap, stack, or handles.  The GC will invalidate any other `Value`,
 /// creating a dangling pointer.
 #[repr(C)]
-#[derive(Copy, Clone)]
-pub struct Value<'a> {
-    phantom: PhantomData<&'a Heap<'a>>,
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Value {
     pub contents: usize,
 }
 
@@ -140,16 +154,19 @@ pub struct Value<'a> {
 /// The number of Scheme words is always computable by
 ///
 /// ```rust
-/// {
-///     if (vector.tag() != Tags::Vector) {
-///         None // not a vector-like thing
-///     } else {
-///         Some(unsafe {
-///             *((vector.contents & !0b111) as *mut usize) &
-///             (!0b111 << (::std::mem::size_of<usize>()*8 - 3))
-///         })
-///     }
-/// }
+/// /*
+/// use std::marker::PhantomData;
+/// use value;
+/// let vector = value::Value { phantom: PhantomData, contents: 0 };
+/// if vector.tag() != value::Tags::Vector {
+///     None // not a vector-like thing
+/// } else {
+///     Some(unsafe {
+///         *((vector.contents & !0b111) as *mut usize) &
+///         (!0b111 << (::std::mem::size_of::<usize>()*8 - 3))
+///     })
+/// };
+/// */
 /// ```
 ///
 /// which is exposed as the method `len`.
@@ -170,12 +187,10 @@ pub struct Value<'a> {
 /// objects that are not a part of the object.  As such, it has no public
 /// constructors, and can only be instantiated by reference.
 #[repr(C)]
-pub struct Vector<'a> {
-    /// Header.  Always ends in `0b000`.
+#[derive(Debug)]
+pub struct Vector {
+    /// Header.  Always has `0b000` as the 3 MSBs.
     header: usize,
-
-    /// Scheme values.
-    data: [Value<'a>],
 }
 
 /// A descriptor for a `Record`.
@@ -183,52 +198,69 @@ pub struct RecordDescriptor {
     /// Always a multiple of 8, but never zero.
     id: usize,
 }
+
 #[repr(C)]
-pub struct Record<'a> {
-    /// Header.  Always ends in `0b000`, but is never zero.
+#[derive(Debug)]
+pub struct Record {
+    /// Header.  Always starts with a nonzero 3 most significant bits.
     header: usize,
 
     /// Scheme values.
-    data: [Value<'a>],
+    data: [Value],
 }
 
 /// A (mutable) Scheme pair.  Subject to garbage collection.
 #[repr(C)]
-pub struct Pair<'a> {
+#[derive(Debug)]
+pub struct Pair {
     pub header: usize,
-    pub car: Cell<Value<'a>>,
-    pub cdr: Cell<Value<'a>>,
+    pub car: Cell<Value>,
+    pub cdr: Cell<Value>,
 }
 
 /// A Scheme closure.  Subject to garbage collection.
 #[repr(C)]
-pub struct Closure<'a> {
+#[derive(Debug)]
+pub struct Closure {
     pub header: usize,
-    pub bytecode: Value<'a>,
-    pub upvalues: [Value<'a>],
+    pub bytecode: Value,
+    pub upvalues: [Value],
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct Instruction {
+    pub opcode: u8,
+    pub src: u8,
+    pub src1: u8,
+    pub dst: u8,
+}
+
+pub enum EnumValue {
+    Pair(*mut Pair),
+    Vector(*mut Vector),
+    Fixnum(usize),
 }
 
 /// An object containing compiled Scheme bytecode.  Subject to garbage collection.
 #[repr(C)]
-pub struct BCO<'a> {
+#[derive(Debug)]
+pub struct BCO {
     /// Header.  Indicates that this is a BCO.
     header: usize,
 
-    /// Phantom data to hold a lifetime.
-    phantom: PhantomData<&'a Heap<'a>>,
-
     /// Actual bytecode
-    contents: [u32],
+    pub contents: [Instruction],
 }
 
-impl<'a> Value<'a> {
+impl Value {
     #[inline(never)]
-    pub fn slow_add(first: &Self, second: &Self) -> Result<Self, SchemeError> {
+    pub fn slow_add(_first: &Self, _second: &Self) -> Result<Self, SchemeError> {
         unimplemented!()
     }
 
     #[inline(always)]
-    pub fn subtract(first: &Self, second: &Self) -> Self {
+    pub fn subtract(_first: &Self, _second: &Self) -> Self {
         unimplemented!()
     }
 
@@ -237,8 +269,16 @@ impl<'a> Value<'a> {
             None
         } else {
             Some(unsafe {
-                *(self.contents as *const usize) & HEADER_TAG
+                *((self.contents & !0b111) as *const usize) & !HEADER_TAG
             })
+        }
+    }
+    pub fn enum_type(&self) -> EnumValue {
+        match self.tag() {
+            Tags::Pair => EnumValue::Pair(Ptr_Val!(self) as *mut Pair),
+            Tags::Vector => EnumValue::Vector(Ptr_Val!(self) as *mut Vector),
+            Tags::Num|Tags::Num2 => EnumValue::Fixnum(self.contents >> 2),
+            _ => unimplemented!(),
         }
     }
 }
@@ -246,7 +286,7 @@ impl<'a> Value<'a> {
 pub struct SchemeError(String);
 pub struct Bignum;
 impl Bignum {
-    pub fn new_from_fixnums(x: usize, y: usize) -> ! {
+    pub fn new_from_fixnums(_x: usize, _y: usize) -> ! {
         unimplemented!()
     }
 }

@@ -27,12 +27,7 @@ pub struct ActivationRecord {
     return_address: usize,
 }
 use alloc::Allocator;
-struct Instruction {
-    opcode: u8,
-    src: u8,
-    src1: u8,
-    dst: u8,
-}
+use value::Instruction;
 pub struct State<'a> {
     pc: usize,
     sp: usize,
@@ -48,10 +43,10 @@ fn interpret_bytecode<'a, A: Allocator<'a>, H, S, L, H_>(s: &'a mut State<'a>) {
     let mut stack = heap.stack;
     let mut sp = s.sp;
     'main: loop {
-        let inst = s.bytecode[sp];
+        let inst = s.bytecode.contents[sp];
         match inst.opcode {
             Cons => {
-                stack[inst.dst] = heap.cons(s, stack[inst.src], stack[inst.src2]);
+                stack[inst.dst] = heap.alloc_pair(stack[inst.src], stack[inst.src2]);
             }
             Car => {
                 let src = stack[inst.src].check_cons();

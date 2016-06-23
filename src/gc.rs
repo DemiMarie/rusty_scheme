@@ -2,6 +2,3 @@
 //!
 //! This module implements the GC.
 
-use value;
-use value::Value;
-use ::std::mem;

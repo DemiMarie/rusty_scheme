@@ -1,9 +1,8 @@
-use std::marker::PhantomData;
 use alloc;
 use value;
-use value::{Value, float_val};
+use value::{Value};
 pub fn exponential () -> ! { unimplemented!() }
-pub fn slow_add (first: &mut Value, other: &mut Value) -> ! { unimplemented!() }
+pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) -> ! { unimplemented!() }
 /// Add two `Value`s, according to Scheme semantics.
 ///
 /// The cases where both are fixnums or both are flonums is special-cased
@@ -11,11 +10,10 @@ pub fn slow_add (first: &mut Value, other: &mut Value) -> ! { unimplemented!() }
 /// function
 #[inline(always)]
 pub fn add<'a>(alloc: alloc::Heap, first: &mut Value, other: &mut Value)
-           -> Result<Value<'a>, String> {
+           -> Result<Value, String> {
     if first.both_fixnums(other) {
         let res = Value {
             contents: (first.contents & !1) + other.contents,
-            phantom: PhantomData,
         };
         if res.contents > first.contents {
             // Overflow!
@@ -29,7 +27,7 @@ pub fn add<'a>(alloc: alloc::Heap, first: &mut Value, other: &mut Value)
         unimplemented!()
     } else {
         // Slow path.
-        return Err("non-fixnum addition not yet implemented".to_owned());
-        self::slow_add(first, other)
+        //return Err("non-fixnum addition not yet implemented".to_owned());
+        self::slow_add(alloc, first, other)
     }
 }

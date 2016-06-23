@@ -1,5 +1,5 @@
 [package]
-name = "RustyScheme"
+name = "rusty_scheme"
 version = "0.1.0"
 authors = ["Demi Marie Obenour <demiobenour@gmail.com>"]
 
