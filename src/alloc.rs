@@ -3,7 +3,6 @@ use std::io::prelude::*;
 use std::io::stdout;
 use std::mem;
 use std::ptr;
-#[cfg(not(use_memcpy_in_gc))]
 use std::slice;
 
 use super::value;
@@ -98,7 +97,9 @@ unsafe fn consistency_check(_heap: &Vec<Value>) {}
 /// end of tospace.
 ///
 /// This function takes raw pointers because of aliasing concerns.
-unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>) {
+unsafe fn relocate(current: *mut Value,
+                   tospace: &mut Vec<Value>,
+                   fromspace: &mut Vec<Value>) {
     let size_of_value: usize = size_of!(Value);
     (*current).size().map(|size| {
         // pointer to head of object being copied
@@ -115,7 +116,7 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>) {
             // End pointer
             let end = tospace.as_mut_ptr().offset(tospace.len() as isize);
 
-            if cfg!(use_memcpy_in_gc) {
+            if cfg!(feature = "memcpy_gc") {
                 debug_assert!(end as usize & 0b111 == 0);
                 // The amount to copy
                 let amount_to_copy = (size * size_of_value + 0b111) & !0b111;
@@ -129,17 +130,36 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>) {
                 tospace.set_len(len + amount_to_copy / size_of_value);
             } else {
                 let amount_to_copy = ((size * size_of_value + 0b111) & !0b111) / size_of_value;
+
+                // Check that the amount to copy is reasonable
                 debug_assert!(amount_to_copy > 0);
+
+                // Check that the end pointer is aligned
                 debug_assert!(end as usize & 0b111 == 0);
-                *current = Value { contents: end as usize | ((*current).contents & 0b111) };
+
+                let ptr = Ptr_Val!(*current);
+
+                // Check that the pointer really is to tospace
+                debug_assert!((ptr as usize) <
+                              (fromspace.as_ptr() as usize +
+                               fromspace.len()*size_of!(usize)));
+                debug_assert!(ptr as usize >= fromspace.as_ptr() as usize);
+                // NOTE: this MUST come before replacing the old object with
+                // a forwarding pointer – otherwise, this replacement will
+                // clobber the copied object's header!
                 tospace.extend(slice::from_raw_parts(pointer, amount_to_copy));
+                *ptr = Value{ contents: HEADER_TAG, };
+                *current = Value { contents: end as usize |
+                                        ((*current).contents & 0b111) };
+                *ptr.offset(1) = Value{ contents: end as usize };
+                *ptr.offset(1) = *current;
             }
         }
     });
 }
 
 /// Process the heap.
-unsafe fn scavange_heap(tospace: &mut Vec<Value>) {
+unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
     let mut offset: isize = 0;
     let current = tospace.as_mut_ptr();
     while offset < tospace.len() as isize {
@@ -148,16 +168,18 @@ unsafe fn scavange_heap(tospace: &mut Vec<Value>) {
         offset += 1;
         if !(*current).leafp() {
             for _ in 1..size {
-                relocate(current.offset(offset), tospace);
+                relocate(current.offset(offset), tospace, fromspace);
                 offset += 1
             }
         }
     }
 }
 
-unsafe fn scavange_stack(stack: &mut Vec<Value>, tospace: &mut Vec<Value>) {
+unsafe fn scavange_stack(stack: &mut Vec<Value>,
+                         tospace: &mut Vec<Value>,
+                         fromspace: &mut Vec<Value>) {
     for i in stack.iter_mut() {
-        relocate(i, tospace);
+        relocate(i, tospace, fromspace);
     }
 }
 
@@ -172,13 +194,13 @@ fn collect(heap: &mut Heap) {
         heap.tospace.resize(0, Value{contents:0});
         println!("Tospace resized to {}", heap.tospace.capacity());
         let _ = stdout().flush();
-        scavange_stack(&mut heap.stack, &mut heap.tospace);
+        scavange_stack(&mut heap.stack, &mut heap.tospace, &mut heap.fromspace);
         println!("Stack scavanged");
-        scavange_heap(&mut heap.tospace);
+        scavange_heap(&mut heap.tospace, &mut heap.fromspace);
         println!("Heap scavanged");
         consistency_check(&heap.tospace);
         println!("Completed second consistency check");
-        //heap.fromspace.resize(0, Value{contents: 0});
+        heap.fromspace.resize(0, Value{contents: 0});
     }
 }
 
@@ -252,7 +274,7 @@ mod tests {
                  SIZEOF_PAIR);
         heap.alloc_pair(ZERO, ZERO);
         //println!("{:?}", heap);
-        for _ in 1..((1 << 8)) {
+        for i in 1..((1 << 11)) {
             let old_pair = heap.stack[0];
             heap.alloc_pair(old_pair, old_pair);
             assert_eq!(heap.stack.len(), 2);
@@ -272,12 +294,15 @@ mod tests {
             assert_valid(&heap);
             super::collect(&mut heap);
             assert_valid(&heap);
-            // assert!(heap.tospace.len() >= 3*i)
+            assert!(heap.tospace.len() >= 3*i)
         }
+        heap.stack.pop();
+        assert!(heap.stack.len() == 0);
         // assert!(heap.fromspace.capacity() > 3* (1 << 20));
         //println!("{:?}", heap);
         {
             super::collect(&mut heap);
+            assert!(heap.tospace.len() == 0);
         }
     }
 }
