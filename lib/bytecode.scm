@@ -1,19 +1,28 @@
-                                        ;: var=$1; shift; exec "$var" -- "$0" "$@"
+;: var=$1; shift; exec "$var" -- "$0" "$@"
 ;;(use-modules (sfri sfri-9))
+
+;;;; bytecode.scm – bytecode objects and bytecode generation
+;;;
+;;; This library defines the type of bytecode objects.  It also defines
+;;; operations for appending bytecodes and a DSL for assembling them.
 
 (library
     (bytecomp bytecode)
-  (import (sfri 9))
+  (import
+   (srfi 9)
+   (srfi 43))
   (export bytecode-object
           Cons
           Car
           Cdr
           Set-car!
           Set-cdr!
+          Vector-set!
+          Vector-ref
+          Call
+          TailCall
           Bytecode.new)
   (begin
-    (define filename (car (command-line)))
-
     (define-record-type 'bytecode-object
       (make-bytecode-object bytecode bytecode-length constants constants-length)
       bytecode-object?
@@ -22,38 +31,61 @@
       (constants get-constants set-constants!)
       (constants-length get-constants-length set-constants-length!))
 
+    #;(lambda (x)
+        (syntax-case x ()
+          ((_ bytecode-object (Cons register1 register2))
+           (add-two-arg-opcode bytecode-object 'Cons register1 register2))
+          ((_ bytecode-object (Car register1))
+           (add-one-arg-opcode bytecode-object 'Car register1))
+          ((_ bytecode-object (Cdr register1))
+           (add-two-arg-opcode bytecode-object 'Cdr register1))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+          ((_ bytecode-object (SetCar register1 register2))
+           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))))
+
+    (define-syntax add-bytecode
+      (syntax-rules ()
+        ((_ bco (opcode arg))
+         (add-one-arg-opcode bco 'opcode arg))
+        ((_ bco (opcode arg1 arg2))
+         (add-two-arg-opcode bco 'opcode arg1 arg2))))
+
     (define-syntax add-bytecodes
-      (syntax-rules (->)
-        ((_ bytecode-object (token register1 register2) ...)
+      (syntax-rules ()
+        ((_ bytecode-object operations more-operations ...)
          (begin
-           (add-bytecode bytecode-object 'token register1 register2)
-           ...))))
+           (add-bytecode bytecode-object operations)
+           (add-bytecode bytecode-object more-operations) ...))))
 
-    (define (Bytecode.new)
-      (make-bytecode-object (make-vector #x10) 0 (make-vector #x10) 0))
+    ;; Add `object` to the constant vector of `bco`.
+    ;; Returns the index of `object` in the constant vector of `bco`.
+    ;; `object` must not be modified afterwords.
+    (define (add-to-constant-vector bco object)
+      (let* ((constants (get-constants bco))
+             (length-of-bco-constants (vector-length constants)))
+        (let ((vector-length (get-constants-length bco)))
+          (if (<= vector-length constants)
+              (set-constants!
+               bco (vector-copy constants 0 (* 2 vector-length) #f))))
+        (set-constants-length! bco (+ 1 length-of-bco-constants))
+        length-of-bco-constants))
 
-    (define (add-bytecode bco bytecodes)
-      (let ((bco-vector (get-bytecode bco))
-            (bco-length (get-bytecode-length bco)))
-        (let ((capacity (get-bytecode-length bco-vector)))
-          ())))
+    ;;; Emit a jump.
+    (define (emit-jump bco))))
 
-    (define (compile-function-call environment port head rest args)
-      (case (car form)
-        ((quote)
-         (write-char port load-opcode)
-         (write-char port )
-         ((eq?)
-          (write-char port pop-opcode)))))
-
-
-    (define (byte-compile form args)
-      (let ((environment (make-hash-table)))
-        (call-with-output-file filename
-          (lambda (port)
-            (cond ((pair? form)
-                   (compile-function-call environment port
-                                          (car form) (cdr form) args))
-                  ((symbol? form)
-                   (combile-variable-reference environment port))
-                  (#t (compile-literal form args)))))))))
+;;; Local Variables:
+;;; mode: scheme
+;;; End:
