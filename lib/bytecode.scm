@@ -1,4 +1,3 @@
-;: var=$1; shift; exec "$var" -- "$0" "$@"
 ;;(use-modules (sfri sfri-9))
 
 ;;;; bytecode.scm – bytecode objects and bytecode generation
@@ -7,10 +6,7 @@
 ;;; operations for appending bytecodes and a DSL for assembling them.
 
 (library
-    (bytecomp bytecode)
-  (import
-   (srfi 9)
-   (srfi 43))
+    (bytecode)
   (export bytecode-object
           Cons
           Car
@@ -22,8 +18,13 @@
           Call
           TailCall
           Bytecode.new)
+  (import
+   (rnrs)
+   (srfi srfi-9)
+   (srfi srfi-43))
+
   (begin
-    (define-record-type 'bytecode-object
+    (define-record-type bytecode-object
       (make-bytecode-object bytecode bytecode-length constants constants-length)
       bytecode-object?
       (bytecode get-bytecode set-bytecode!)
@@ -32,29 +33,29 @@
       (constants-length get-constants-length set-constants-length!))
 
     #;(lambda (x)
-        (syntax-case x ()
-          ((_ bytecode-object (Cons register1 register2))
-           (add-two-arg-opcode bytecode-object 'Cons register1 register2))
-          ((_ bytecode-object (Car register1))
-           (add-one-arg-opcode bytecode-object 'Car register1))
-          ((_ bytecode-object (Cdr register1))
-           (add-two-arg-opcode bytecode-object 'Cdr register1))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
-          ((_ bytecode-object (SetCar register1 register2))
-           (add-two-arg-opcode bytecode-object 'SetCar register1 register2))))
+    (syntax-case x ()
+    ((_ bytecode-object (Cons register1 register2))
+    (add-two-arg-opcode bytecode-object 'Cons register1 register2))
+    ((_ bytecode-object (Car register1))
+    (add-one-arg-opcode bytecode-object 'Car register1))
+    ((_ bytecode-object (Cdr register1))
+    (add-two-arg-opcode bytecode-object 'Cdr register1))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))
+    ((_ bytecode-object (SetCar register1 register2))
+    (add-two-arg-opcode bytecode-object 'SetCar register1 register2))))
 
     (define-syntax add-bytecode
       (syntax-rules ()
@@ -84,7 +85,8 @@
         length-of-bco-constants))
 
     ;;; Emit a jump.
-    (define (emit-jump bco))))
+    (define (emit-jump bco)
+      (err))))
 
 ;;; Local Variables:
 ;;; mode: scheme
