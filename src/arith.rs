@@ -1,7 +1,7 @@
 use alloc;
 use value;
 use value::{Value};
-pub fn exponential () -> ! { unimplemented!() }
+pub fn exponential (_: Value, _: Value) -> ! { unimplemented!() }
 pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) -> ! { unimplemented!() }
 /// Add two `Value`s, according to Scheme semantics.
 ///

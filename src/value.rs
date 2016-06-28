@@ -58,6 +58,8 @@ pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR*8 - 3);
 /// The header of a pair.
 pub const PAIR_HEADER: usize = HEADER_TAG | SIZEOF_PAIR;
 
+/// The header of a vector.
+pub const VECTOR_HEADER: usize = 0;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum Tags {
@@ -228,11 +230,11 @@ pub struct Closure {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Instruction {
     pub opcode: u8,
     pub src: u8,
-    pub src1: u8,
+    pub src2: u8,
     pub dst: u8,
 }
 
