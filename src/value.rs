@@ -238,7 +238,7 @@ pub struct Instruction {
     pub dst: u8,
 }
 
-pub enum EnumValue {
+pub enum Kind {
     Pair(*mut Pair),
     Vector(*mut Vector),
     Fixnum(usize),
@@ -275,12 +275,79 @@ impl Value {
             })
         }
     }
-    pub fn enum_type(&self) -> EnumValue {
+    pub fn set_car(&self, other: Value) -> Result<(), ()> {
+        match self.kind() {
+            Kind::Pair(pair) => unsafe { Ok((*pair).car.set(other)) },
+            _ => Err(()),
+        }
+    }
+    pub fn set_cdr(&self, other: Value) -> Result<(), ()> {
+        match self.kind() {
+            Kind::Pair(pair) => unsafe { Ok((*pair).cdr.set(other)) },
+            _ => Err(()),
+        }
+    }
+    pub fn car(&self) -> Result<Value, ()> {
+        match self.kind() {
+            Kind::Pair(pair) => unsafe { Ok((*pair).car.get()) },
+            _ => Err(())
+        }
+    }
+    pub fn cdr(&self) -> Result<Value, ()> {
+        match self.kind() {
+            Kind::Pair(pair) => unsafe { Ok((*pair).cdr.get()) },
+            _ => Err(())
+        }
+    }
+
+    pub fn array_set(&self, index: usize, other: Value) -> Result<(), String> {
+        let vec = match self.kind() {
+            Kind::Vector(vec) => vec,
+            _ => return Err("can't index a non-vector".to_owned()),
+        };
+        unsafe {
+            if (*vec).header >= index {
+                Err((if (*vec).header & HEADER_TAG == 0 {
+                    "index out of bounds"
+                } else {
+                    "can't index a non-record"
+                }).to_owned())
+            } else {
+                *((vec as usize + index) as *mut Value) = other;
+                Ok(())
+            }
+        }
+    }
+    pub fn array_get(&self, index: usize) -> Result<*mut Self, String> {
+        let vec = match self.kind() {
+            Kind::Vector(vec) => vec,
+            _ => return Err("can't index a non-vector".to_owned()),
+        };
+        unsafe {
+            if (*vec).header >= index {
+                Err((if (*vec).header & HEADER_TAG == 0 {
+                    "index out of bounds"
+                } else {
+                    "can't index a non-record"
+                }).to_owned())
+            } else {
+                Ok((vec as usize + index) as *mut Value)
+            }
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
         match self.tag() {
-            Tags::Pair => EnumValue::Pair(Ptr_Val!(self) as *mut Pair),
-            Tags::Vector => EnumValue::Vector(Ptr_Val!(self) as *mut Vector),
-            Tags::Num|Tags::Num2 => EnumValue::Fixnum(self.contents >> 2),
+            Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
+            Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
+            Tags::Num|Tags::Num2 => Kind::Fixnum(self.contents >> 2),
             _ => unimplemented!(),
+        }
+    }
+    pub fn as_fixnum(&self) -> Result<usize, &'static str> {
+        match self.kind() {
+            Kind::Fixnum(val) => Ok(val),
+            _ => Err("not a fixnum"),
         }
     }
 }
@@ -292,9 +359,11 @@ impl Bignum {
         unimplemented!()
     }
 }
+
 pub unsafe fn float_val(val: &Value) -> f64 {
     *((val.contents & 0b111) as *const f64)
 }
+
 pub struct HashTable;
 pub struct IOPort;
 pub struct RustData;

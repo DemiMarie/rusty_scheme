@@ -1,3 +1,4 @@
+#![feature(type_ascription)]
 #![allow(dead_code)]
 #![deny(warnings)]
 

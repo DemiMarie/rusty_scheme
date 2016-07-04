@@ -1,163 +1,196 @@
 use value;
-use std::collections::HashMap;
+use std::mem;
 use alloc;
 use arith;
 #[repr(u8)]
 pub enum Opcode {
+    /// `cons`
     Cons,
+
+    /// `car`
     Car,
+
+    /// `cdr`
     Cdr,
-    Aref,
-    Aset,
-    Throw,
-    MakeArray,
-    Call,
-    TailCall,
-    Catch,
-    Return,
+
+    /// `set-car!`
     SetCar,
+
+    /// `set-cdr!`
     SetCdr,
-    Set,
-    SetField,
+
+    /// Addition
+    Add,
+
+    /// Subtraction
+    Subtract,
+
+    /// Multiplication
+    Multiply,
+
+    /// Division
+    Divide,
+
+    /// Exponentiation
+    Power,
+
+    /// Create an array
+    MakeArray,
+
+    /// Store to an array
+    SetArray,
+
+    /// Load from an array
+    GetArray,
+
+    /// Function call
+    Call,
+
+    /// Tail call
+    TailCall,
+
+    /// Return from a function
+    Return,
+
+    /// Create a closure
     Closure,
+
+    /// Mutation of stack slots
+    Set,
+
+    /// Load from constant vector
+    Constant,
+
+    /// Load from global
     Load,
 }
 
+
 pub struct ActivationRecord {
+    stack_pointer: usize,
     return_address: usize,
 }
+
 use alloc::Allocator;
 use value::Instruction;
 pub struct State {
-    pc: usize,
+    program_counter: usize,
     sp: usize,
+    control_stack: Vec<ActivationRecord>,
     registers: Vec<Instruction>,
     heap: alloc::Heap,
+    old_sp: usize,
     bytecode: value::BCO,
-    //symbol_table: HashMap<_,_>,
+}
+
+fn unwind(_stack: &mut alloc::Stack) -> () {
+    unimplemented!()
 }
 
 fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
-    use value::EnumValue;
-    let pc = &mut s.pc;
+    let pc = &mut s.program_counter;
     let heap = &mut s.heap;
-    let stack: &mut alloc::Stack = &mut heap.stack;
     let sp = &mut s.sp;
+    let fp = 0;
     'main: loop {
-        let inst = s.bytecode.contents[*sp];
-        match inst.opcode {
-            Cons => {
-                stack[inst.dst.into()] =
-                    heap.alloc_pair(stack[inst.src.into()],
-                                    stack[inst.src2.into()]);
-                Ok(())
-            }
-            Car => {
-                let src: value::Pair = stack[inst.src.into()].check_cons();
-                stack[inst.dst.into()] = src.car.get();
-                Ok(())
-            }
-            Cdr => {
-                let src = stack[inst.src.into()].check_cons();
-                stack[inst.dst.into()] = src.cdr;
-                Ok(())
-            }
-            SetCar => {
-                let src = stack[inst.dst.into()].check_cons();
-                src.set_car(stack[inst.src.into()]);
-                Ok(())
-            }
-            SetCdr => {
-                let src = stack[inst.dst.into()].check_cons();
-                src.set_cdr(stack[inst.src.into()]);
-                *pc += 2;
-                Ok(())
-            }
-            Set => {
-                // NOBARRIER: the stack is a GC root
-                stack[inst.dst.into()] = stack[inst.src.into()];
-                *pc += 2;
-                Ok(())
-            }
-            Cdr => {
-                let src = stack[inst.src.into()].check_cons();
-                stack[inst.dst.into()] = src.cdr;
-                Ok(())
-            }
-            SetCar => {
-                let src = stack[inst.dst.into()].check_cons();
-                // Includes the write barrier
-                src.set_car(stack[inst.src.into()]);
-                Ok(())
-            }
-            SetCdr => {
-                if let EnumValue::Pair(pair) =
-                    stack[inst.dst.into()].enum_type() {
-                    // Includes the write barrier
-                    unsafe { (*pair).cdr.set(stack[inst.src.into()]) };
-                    Ok(())
-                } else {
-                    Err(())//"Attempt to pass non-cons to set-cdr!")
+        macro_rules! interp_try {
+            ($exp: expr) => {
+                {
+                    let val: Result<_, _> = $exp;
+                    match val {
+                    Ok(x) => x,
+                        Err(_) => {
+                            unwind(&mut heap.stack);
+                            break 'main
+                        }
+                    }
                 }
             }
-            Set => {
-                // NOBARRIER: the stack is a GC root
-                stack[inst.dst.into()] = stack[inst.src.into()];
-                Ok(())
+        }
+        let Instruction { opcode, src, src2, dst } = s.bytecode.contents[*sp];
+        let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
+        let opcode = unsafe {
+            if opcode <= mem::transmute(Opcode::Load) {
+                mem::transmute(opcode)
+            } else {
+                unreachable!()
             }
-            Add => {
+        };
+        match opcode {
+            Opcode::Cons => {
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                heap.alloc_pair(fst, snd);
+                heap.stack[dst] = heap.stack.pop().unwrap()
+            }
+            Opcode::Car => heap.stack[dst] = interp_try!(heap.stack[src].car()),
+            Opcode::Cdr => heap.stack[dst] = interp_try!(heap.stack[src].cdr()),
+            Opcode::SetCar => interp_try!(heap.stack[dst].set_car(heap.stack[src])),
+            Opcode::SetCdr => interp_try!(heap.stack[dst].set_cdr(heap.stack[src])),
+            Opcode::Set => heap.stack[dst] = heap.stack[src],
+            Opcode::Add => {
                 // The hot paths are fixnums and flonums.  They are in an inlined
                 // function.
                 // Most scripts probably do not heavily use complex numbers.
                 // Bignums or rationals will always be slow.
-                stack[inst.dst.into()] = stack[inst.src.into()] +
-                    stack[inst.src2.into()];
-                Ok(())
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                heap.stack[dst] = interp_try!(arith::add(heap, &fst, &snd))
             }
-            Subtract => {
+            Opcode::Subtract => {
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
                 // See above.
-                stack[inst.dst.into()] = stack[inst.src.into()] -
-                    stack[inst.src2.into()];
-                Ok(())
+                heap.stack[dst] = interp_try!(arith::subtract(heap, &fst, &snd))
             }
-            Multiply => {
+            Opcode::Multiply => {
                 // See above.
-                stack[inst.dst.into()] = stack[inst.src.into()] *
-                    stack[inst.src2.into()];
-                Ok(())
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                heap.stack[dst] = interp_try!(arith::multiply(heap, &fst, &snd))
             }
-            Divide => {
+            Opcode::Divide => {
                 // See above.
-                stack[inst.dst.into()] = stack[inst.src.into()] /
-                    stack[inst.src2.into()];
-                Ok(())
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                heap.stack[dst] = interp_try!(arith::divide(heap, &fst, &snd))
             }
-            Power => {
+            Opcode::Power => {
                 // See above.
-                stack[inst.dst.into()] =
-                    arith::exponential(stack[inst.src.into()],
-                                       stack[inst.src2.into()]);
-                Ok(())
+                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                heap.stack[dst] = arith::exponential(fst, snd)
             }
-            MakeClosure => {
-                alloc::Heap::allocate_closure(heap,
-                                       inst.get_closure_pointer_or_bug(),
-                                       inst.free_variables());
-                Ok(())
-            }
-            MakeArray => A::allocate_vector(..),
-            SetArray => {
-                try!(stack[inst.dst.into()].as_array())[stack[inst.src2.into()]]
-                = stack[inst.src2.into()];
-                Ok(())
-            }
-            GetArray => unimplemented!(),
-            Call => unimplemented!(),
-            Constant => unimplemented!(),
-            TailCall => {
-                sp = s.return_address;
+            Opcode::Closure => {
+                // alloc::Heap::allocate_closure(heap);
                 unimplemented!()
             }
+            Opcode::MakeArray => {
+                let _value = alloc::Heap::alloc_vector(heap, &[]);
+            }
+            Opcode::SetArray => {
+                let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
+                interp_try!(heap.stack[dst].array_set(index, heap.stack[src2]))
+            }
+            Opcode::GetArray => {
+                let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
+                heap.stack[dst] = interp_try!(heap.stack[src2]
+                                                  .array_get(index)
+                                                  .map(|ptr| unsafe { *ptr }))
+            }
+            // Frame layout: activation record below rest of data
+            Opcode::Call => {
+                s.control_stack.push(ActivationRecord {
+                    return_address: *pc,
+                    stack_pointer: fp,
+                });
+                *sp = heap.stack.len()
+            }
+            Opcode::Constant => unimplemented!(),
+            Opcode::TailCall => {
+                let last = interp_try!(s.control_stack.pop().ok_or("control heap.stack \
+                                                                    underflow"));
+                let (first, rest) = heap.stack.split_at_mut(*sp + 1);
+                *pc = last.return_address + 1;
+                first[last.stack_pointer + 1..last.stack_pointer + src + 2].copy_from_slice(rest);
+                *sp = last.stack_pointer
+            }
+            Opcode::Return => unimplemented!(),
+            Opcode::Load => unimplemented!(),
         };
     }
 }

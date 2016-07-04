@@ -1,5 +1,4 @@
 use alloc;
-use value;
 use value::{Value};
 pub fn exponential (_: Value, _: Value) -> ! { unimplemented!() }
 pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) -> ! { unimplemented!() }
@@ -9,25 +8,68 @@ pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) ->
 /// as a fast path function, which is inlined into the interpreter.  The general case is much slower and put in a seperate function, which is not inlined.
 /// function
 #[inline(always)]
-pub fn add<'a>(alloc: alloc::Heap, first: &mut Value, other: &mut Value)
+pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
-        let res = Value {
-            contents: (first.contents & !1) + other.contents,
-        };
+        let res = (first.contents & !1).checked_add(other.contents);
+        res.ok_or("overflow not yet implemented".to_owned())
+           .map(|x| Value { contents: x })
+        /*
         if res.contents > first.contents {
             // Overflow!
             value::Bignum::new_from_fixnums(first.contents, other.contents)
         } else {
             Ok(res)
-        }
+        }*/
     } else if first.flonump() && other.flonump() {
         // Multiply the `f64` values pointed to by the arguments
         //Ok(alloc.alloc_float(unsafe { float_val(first) * float_val(other) }))
-        unimplemented!()
+        //unimplemented!()
+        Err("flonums not yet implemented".to_owned())
     } else {
         // Slow path.
-        //return Err("non-fixnum addition not yet implemented".to_owned());
-        self::slow_add(alloc, first, other)
+        Err("non-fixnum addition not yet implemented".to_owned())
+        //self::slow_add(alloc, first, other)
+    }
+}
+#[inline(always)]
+pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
+           -> Result<Value, String> {
+    if first.both_fixnums(other) {
+        let res = (first.contents & !1).checked_sub(other.contents);
+        res.ok_or("overflow not yet implemented".to_owned())
+           .map(|x| Value { contents: x })
+    } else if first.flonump() && other.flonump() {
+        Err("flonums not yet implemented".to_owned())
+    } else {
+        Err("non-fixnum addition not yet implemented".to_owned())
+    }
+}
+
+#[inline(always)]
+pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
+           -> Result<Value, String> {
+    if first.both_fixnums(other) {
+        let res = (first.contents & !1).checked_mul(other.contents);
+        res.ok_or("overflow not yet implemented".to_owned())
+           .map(|x| Value { contents: x })
+    } else if first.flonump() && other.flonump() {
+        Err("flonums not yet implemented".to_owned())
+    } else {
+        Err("non-fixnum addition not yet implemented".to_owned())
+    }
+}
+
+#[inline(always)]
+pub fn divide(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
+           -> Result<Value, String> {
+    if first.both_fixnums(other) {
+        let res = (first.contents & !1).checked_div(other.contents);
+        res.ok_or("overflow not yet implemented".to_owned())
+           .map(|x| Value { contents: x })
+    } else if first.flonump() && other.flonump() {
+        Err("flonums not yet implemented".to_owned())
+    } else {
+        Err("non-fixnum addition not yet implemented".to_owned())
     }
 }
