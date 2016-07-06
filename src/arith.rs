@@ -11,9 +11,9 @@ pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) ->
 pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
-        let res = (first.contents & !1).checked_add(other.contents);
+        let res = (first.get() & !1).checked_add(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
-           .map(|x| Value { contents: x })
+           .map(Value::new)
         /*
         if res.contents > first.contents {
             // Overflow!
@@ -36,9 +36,9 @@ pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
 pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
-        let res = (first.contents & !1).checked_sub(other.contents);
+        let res = (first.get() & !1).checked_sub(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
-           .map(|x| Value { contents: x })
+           .map(Value::new)
     } else if first.flonump() && other.flonump() {
         Err("flonums not yet implemented".to_owned())
     } else {
@@ -50,9 +50,9 @@ pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
 pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
-        let res = (first.contents & !1).checked_mul(other.contents);
+        let res = (first.get() & !1).checked_mul(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
-           .map(|x| Value { contents: x })
+           .map(Value::new)
     } else if first.flonump() && other.flonump() {
         Err("flonums not yet implemented".to_owned())
     } else {
@@ -64,9 +64,9 @@ pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
 pub fn divide(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
-        let res = (first.contents & !1).checked_div(other.contents);
+        let res = (first.get() & !1).checked_div(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
-           .map(|x| Value { contents: x })
+           .map(Value::new)
     } else if first.flonump() && other.flonump() {
         Err("flonums not yet implemented".to_owned())
     } else {

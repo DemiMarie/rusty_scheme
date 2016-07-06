@@ -16,7 +16,7 @@ mod state;
 mod arith;
 mod alloc;
 mod interp;
-//mod read;
+mod read;
 #[cfg(test)]
 mod tests {
     #[test]

@@ -4,7 +4,6 @@ use std::io::stdout;
 use std::mem;
 use std::ptr;
 use std::slice;
-
 use super::value;
 use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER};
 #[cfg(debug_assertions)]
@@ -35,8 +34,8 @@ pub trait Allocator {
     /// Allocates a rustdata, which contains an arbitrary Rust object
     fn alloc_rustdata<T>(&mut self, object: &T) -> value::RustData;
 
-// /// Allocates a boxed float on the top of the stack.
-// fn alloc_float(&mut self, float: f64) -> value::Float;
+    // /// Allocates a boxed float on the top of the stack.
+    // fn alloc_float(&mut self, float: f64) -> value::Float;
 }
 
 #[derive(Debug)]
@@ -59,19 +58,19 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
     };
     let mut index = 0;
     while index < heap.len() {
-        let mut current = heap[index];
-        let len = current.contents as usize & !HEADER_TAG;
+        let mut current = heap[index].clone();
+        let len = current.get() as usize & !HEADER_TAG;
         assert!(len > 0);
         index += 1;
         for _ in 1..len {
-            current = heap[index];
+            current = heap[index].clone();
             match current.tag() {
                 Tags::Num | Tags::Num2 => {
-                    assert!(current.contents & 0b11 == 0);
+                    assert!(current.get() & 0b11 == 0);
                 }
                 Tags::Pair => {
-                    assert!(current.contents & 0b111 == 0b111);
-                    assert!((*Ptr_Val!(current)).contents == PAIR_HEADER);
+                    assert!(current.get() & 0b111 == 0b111);
+                    assert!((*Ptr_Val!(current)).get() == PAIR_HEADER);
                     for i in 1..3 {
                         assert_in_heap(heap, Ptr_Val!(current).offset(i) as usize)
                     }
@@ -110,12 +109,12 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
         let pointer: *mut Value = Ptr_Val!(*current);
 
         // Assert that the object header is nonzero.
-        debug_assert!((*pointer).contents != 0,
+        debug_assert!((*pointer).get() != 0,
                       "internal error: copy_value: invalid object header size");
-        if (*pointer).contents == HEADER_TAG {
+        if (*pointer).get() == HEADER_TAG {
             // Forwarding pointer detected (this header tag is otherwise absurd,
             // since no object can have a size of zero).
-            *current = *pointer.offset(1)
+            *current = (&*pointer.offset(1)).clone()
         } else {
             let len = tospace.len();
 
@@ -132,7 +131,8 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
 
             // Check that the pointer really is to fromspace
             debug_assert!((pointer as usize) <
-                          (fromspace.as_ptr() as usize + fromspace.len() * size_of!(usize)));
+                          (fromspace.as_ptr() as usize + fromspace.len() *
+                           size_of!(usize)));
             debug_assert!(pointer as usize >= fromspace.as_ptr() as usize);
 
             if cfg!(feature = "memcpy-gc") {
@@ -148,11 +148,11 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
                 // NOTE: this MUST come before replacing the old object with
                 // a forwarding pointer – otherwise, this replacement will
                 // clobber the copied object's header!
-                tospace.extend(slice::from_raw_parts(pointer, amount_to_copy));
+                tospace.extend_from_slice(slice::from_raw_parts(pointer, amount_to_copy));
             }
-            *pointer = Value { contents: HEADER_TAG };
-            *current = Value { contents: end as usize | ((*current).contents & 0b111) };
-            *pointer.offset(1) = *current;
+            *pointer = Value::new(HEADER_TAG);
+            *current = Value::new(end as usize | ((*current).get() & 0b111));
+            *pointer.offset(1) = (*current).clone();
         }
     });
 }
@@ -162,7 +162,7 @@ unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
     let mut offset: isize = 0;
     let current = tospace.as_mut_ptr();
     while offset < tospace.len() as isize {
-        let size = (*current.offset(offset)).contents & !HEADER_TAG;
+        let size = (*current.offset(offset)).get() & !HEADER_TAG;
         assert!(size > 0);
         offset += 1;
         if !(*current).leafp() {
@@ -193,7 +193,7 @@ fn collect(heap: &mut Heap) {
         heap.tospace.reserve(heap.fromspace.len() + heap.fromspace.len() / 2);
         debug!("Fromspace size is {}",
                heap.fromspace.len() + heap.fromspace.len() / 2);
-        heap.tospace.resize(0, Value { contents: 0 });
+        heap.tospace.resize(0, Value::new(0));
         debug!("Tospace resized to {}", heap.tospace.capacity());
         let _ = stdout().flush();
         scavange_stack(&mut heap.stack, &mut heap.tospace, &mut heap.fromspace);
@@ -202,7 +202,7 @@ fn collect(heap: &mut Heap) {
         debug!("Heap scavanged");
         consistency_check(&heap.tospace);
         debug!("Completed second consistency check");
-        heap.fromspace.resize(0, Value { contents: 0 });
+        heap.fromspace.resize(0, Value::new(0));
     }
 }
 
@@ -236,15 +236,13 @@ impl Heap {
         if tospace_space < SIZEOF_PAIR {
             collect(self);
         }
-        self.tospace.push(Value { contents: PAIR_HEADER });
+        self.tospace.push(Value::new(PAIR_HEADER));
         self.tospace.push(car);
         self.tospace.push(cdr);
         let len = self.tospace.len() - 3;
-        let new_value = Value {
-            contents: unsafe {
-                self.tospace.as_ptr().offset(len as isize) as usize | value::PAIR_TAG
-            },
-        };
+        let new_value = Value::new(unsafe {
+            self.tospace.as_ptr().offset(len as isize) as usize | value::PAIR_TAG
+        });
         self.stack.push(new_value);
         debug!("Allocated a pair")
     }
@@ -255,12 +253,13 @@ impl Heap {
         if tospace_space < (elements.len() + 0b111) & !0b111 {
             collect(self)
         }
-        self.tospace.push(Value { contents: value::VECTOR_HEADER | elements.len() });
+        self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len()));
         let ptr = unsafe {
-            self.tospace.as_ptr().offset(len as isize) as usize | value::VECTOR_TAG
+            self.tospace.as_ptr().offset(len as isize) as usize |
+            value::VECTOR_TAG
         };
-        self.tospace.extend(elements);
-        self.stack.push(Value { contents: ptr });
+        self.tospace.extend_from_slice(elements);
+        self.stack.push(Value::new(ptr));
     }
 
     pub fn new(size: usize) -> Self {
@@ -276,30 +275,32 @@ impl Heap {
 mod tests {
     use super::*;
     use value::*;
-    const ZERO: Value = Value { contents: 0 };
+    use std::cell::Cell;
     #[test]
     fn can_allocate_objects() {
+        let zero: Value = Value { contents: Cell::new(0) };
         let mut heap = Heap::new(1 << 4);
         super::collect(&mut heap);
         debug!("HEADER_TAG = {:x}, PAIR_TAG = {:x}, SIZEOF_PAIR = {:x}",
                HEADER_TAG,
                PAIR_HEADER,
                SIZEOF_PAIR);
-        heap.alloc_pair(ZERO, ZERO);
+        heap.alloc_pair(zero.clone(), zero.clone());
         // debug!("{:?}", heap);
         for i in 1..((1 << 11)) {
-            let old_pair = heap.stack[0];
-            heap.alloc_pair(old_pair, old_pair);
+            let old_pair = heap.stack[0].clone();
+            let old_pair2 = old_pair.clone();
+            heap.alloc_pair(old_pair, old_pair2);
             assert_eq!(heap.stack.len(), 2);
             assert_eq!(heap.stack[1].tag(), Tags::Pair);
             heap.stack[0] = heap.stack.pop().unwrap();
             let assert_valid = |heap: &Heap| {
-                let new_pair = heap.stack[0];
+                let ref new_pair = heap.stack[0];
                 assert_eq!(heap.stack[0].tag(), Tags::Pair);
                 assert_eq!(new_pair.size(), Some(3));
-                if let EnumValue::Pair(ptr) = new_pair.enum_type() {
-                    assert_eq!((unsafe { (*ptr).car.get().tag() }), Tags::Pair);
-                    assert_eq!((unsafe { (*ptr).cdr.get().tag() }), Tags::Pair)
+                if let Kind::Pair(ptr) = new_pair.kind() {
+                    assert_eq!((unsafe { (*ptr).car.tag() }), Tags::Pair);
+                    assert_eq!((unsafe { (*ptr).cdr.tag() }), Tags::Pair)
                 } else {
                     unreachable!()
                 }

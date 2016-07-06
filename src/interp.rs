@@ -118,41 +118,45 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
         };
         match opcode {
             Opcode::Cons => {
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(),
+                                  heap.stack[src2].clone());
                 heap.alloc_pair(fst, snd);
                 heap.stack[dst] = heap.stack.pop().unwrap()
             }
             Opcode::Car => heap.stack[dst] = interp_try!(heap.stack[src].car()),
             Opcode::Cdr => heap.stack[dst] = interp_try!(heap.stack[src].cdr()),
-            Opcode::SetCar => interp_try!(heap.stack[dst].set_car(heap.stack[src])),
-            Opcode::SetCdr => interp_try!(heap.stack[dst].set_cdr(heap.stack[src])),
-            Opcode::Set => heap.stack[dst] = heap.stack[src],
+            Opcode::SetCar =>
+                interp_try!(heap.stack[dst].set_car(heap.stack[src].clone())),
+            Opcode::SetCdr =>
+                interp_try!(heap.stack[dst].set_cdr(heap.stack[src].clone())),
+            Opcode::Set => heap.stack[dst] = heap.stack[src].clone(),
             Opcode::Add => {
                 // The hot paths are fixnums and flonums.  They are in an inlined
                 // function.
                 // Most scripts probably do not heavily use complex numbers.
                 // Bignums or rationals will always be slow.
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(),
+                                  heap.stack[src2].clone());
                 heap.stack[dst] = interp_try!(arith::add(heap, &fst, &snd))
             }
             Opcode::Subtract => {
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 // See above.
                 heap.stack[dst] = interp_try!(arith::subtract(heap, &fst, &snd))
             }
             Opcode::Multiply => {
                 // See above.
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 heap.stack[dst] = interp_try!(arith::multiply(heap, &fst, &snd))
             }
             Opcode::Divide => {
                 // See above.
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 heap.stack[dst] = interp_try!(arith::divide(heap, &fst, &snd))
             }
             Opcode::Power => {
                 // See above.
-                let (fst, snd) = (heap.stack[src], heap.stack[src2]);
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 heap.stack[dst] = arith::exponential(fst, snd)
             }
             Opcode::Closure => {
@@ -164,13 +168,14 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
             }
             Opcode::SetArray => {
                 let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
-                interp_try!(heap.stack[dst].array_set(index, heap.stack[src2]))
+                interp_try!(heap.stack[dst].array_set(index,
+                                                      heap.stack[src2].clone()))
             }
             Opcode::GetArray => {
                 let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
                 heap.stack[dst] = interp_try!(heap.stack[src2]
                                                   .array_get(index)
-                                                  .map(|ptr| unsafe { *ptr }))
+                                                  .map(|ptr| unsafe { (*ptr).clone() }))
             }
             // Frame layout: activation record below rest of data
             Opcode::Call => {
@@ -182,11 +187,13 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
             }
             Opcode::Constant => unimplemented!(),
             Opcode::TailCall => {
-                let last = interp_try!(s.control_stack.pop().ok_or("control heap.stack \
-                                                                    underflow"));
-                let (first, rest) = heap.stack.split_at_mut(*sp + 1);
+                let last = interp_try!(s.control_stack.pop().ok_or("\
+                    control stack underflow"));
+                let (first, rest) = heap.stack.split_at_mut(*sp);
                 *pc = last.return_address + 1;
-                first[last.stack_pointer + 1..last.stack_pointer + src + 2].copy_from_slice(rest);
+                first[last.stack_pointer +
+                      1..last.stack_pointer + src +
+                      2].clone_from_slice(rest);
                 *sp = last.stack_pointer
             }
             Opcode::Return => unimplemented!(),

@@ -77,7 +77,7 @@ pub enum Tags {
 impl Value {
     #[inline(always)]
     pub fn raw_tag(&self) -> usize {
-        self.contents & 0b111
+        self.get() & 0b111
     }
 
     #[inline(always)]
@@ -104,7 +104,7 @@ impl Value {
     }
     #[inline(always)]
     pub fn both_fixnums(&self, other: &Self) -> bool {
-        (self.contents | other.contents) & 0b11 == 0
+        (self.get() | other.get()) & 0b11 == 0
     }
     #[inline(always)]
     pub fn self_evaluating(&self) -> bool {
@@ -124,11 +124,9 @@ impl Value {
     }
 }
 
-
-
 macro_rules! Ptr_Val {
     ($expr:expr) => {
-        ($expr.contents & !0b111) as *mut Value
+        ($expr.contents.get() & !0b111) as *mut Value
     }
 }
 
@@ -144,9 +142,9 @@ macro_rules! size_of {
 /// the heap, stack, or handles.  The GC will invalidate any other `Value`,
 /// creating a dangling pointer.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Value {
-    pub contents: usize,
+    pub contents: Cell<usize>,
 }
 
 /// A Scheme "vector-like thing".
@@ -216,8 +214,8 @@ pub struct Record {
 #[derive(Debug)]
 pub struct Pair {
     pub header: usize,
-    pub car: Cell<Value>,
-    pub cdr: Cell<Value>,
+    pub car: Value,
+    pub cdr: Value,
 }
 
 /// A Scheme closure.  Subject to garbage collection.
@@ -271,7 +269,7 @@ impl Value {
             None
         } else {
             Some(unsafe {
-                *((self.contents & !0b111) as *const usize) & !HEADER_TAG
+                *((self.contents.get() & !0b111) as *const usize) & !HEADER_TAG
             })
         }
     }
@@ -287,19 +285,27 @@ impl Value {
             _ => Err(()),
         }
     }
-    pub fn car(&self) -> Result<Value, ()> {
+    pub fn car(&self) -> Result<Self, ()> {
         match self.kind() {
-            Kind::Pair(pair) => unsafe { Ok((*pair).car.get()) },
+            Kind::Pair(pair) => unsafe { Ok((*pair).car.clone()) },
             _ => Err(())
         }
     }
-    pub fn cdr(&self) -> Result<Value, ()> {
+    pub fn cdr(&self) -> Result<Self, ()> {
         match self.kind() {
-            Kind::Pair(pair) => unsafe { Ok((*pair).cdr.get()) },
+            Kind::Pair(pair) => unsafe { Ok((*pair).cdr.clone()) },
             _ => Err(())
         }
     }
-
+    pub fn new(contents: usize) -> Self {
+        Value { contents: Cell::new(contents) }
+    }
+    pub fn set(&self, other: Self) -> () {
+        self.contents.set(other.contents.get())
+    }
+    pub fn get(&self) -> usize {
+        self.contents.get()
+    }
     pub fn array_set(&self, index: usize, other: Value) -> Result<(), String> {
         let vec = match self.kind() {
             Kind::Vector(vec) => vec,
@@ -313,12 +319,12 @@ impl Value {
                     "can't index a non-record"
                 }).to_owned())
             } else {
-                *((vec as usize + index) as *mut Value) = other;
+                (*((vec as usize + index) as *const Value)).set(other);
                 Ok(())
             }
         }
     }
-    pub fn array_get(&self, index: usize) -> Result<*mut Self, String> {
+    pub fn array_get(&self, index: usize) -> Result<*const Self, String> {
         let vec = match self.kind() {
             Kind::Vector(vec) => vec,
             _ => return Err("can't index a non-vector".to_owned()),
@@ -331,7 +337,7 @@ impl Value {
                     "can't index a non-record"
                 }).to_owned())
             } else {
-                Ok((vec as usize + index) as *mut Value)
+                Ok((vec as usize + index) as *const Value)
             }
         }
     }
@@ -340,7 +346,7 @@ impl Value {
         match self.tag() {
             Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
             Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
-            Tags::Num|Tags::Num2 => Kind::Fixnum(self.contents >> 2),
+            Tags::Num|Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
             _ => unimplemented!(),
         }
     }
@@ -361,7 +367,7 @@ impl Bignum {
 }
 
 pub unsafe fn float_val(val: &Value) -> f64 {
-    *((val.contents & 0b111) as *const f64)
+    *((val.get() & 0b111) as *const f64)
 }
 
 pub struct HashTable;
