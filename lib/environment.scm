@@ -18,32 +18,25 @@
           expression-context?)
   (import
    (rnrs)
+   (bytecode)
    (srfi :1)
    (srfi :69))
+
   ;; A Scheme environment
   (define make-environment make-hash-table)
 
-  (define (expression-context? env) #t)
-  ;; Bind `symbol` to a stack slot, run `func`, then reset the binding
-  ;; of `symbol`.  Not exception safe!
-  (define (with-binding env symbol binding func)
-    (or (symbol? symbol)
-        (error 'assert "internal error: tried to bind a non-symbol"))
-    (let ((old-binding (hash-table-ref env symbol (lambda () #f))))
-      (hash-table-set! env symbol binding)
-      (func)
-      (hash-table-set! env symbol old-binding)))
-  (define (with-bindings env symbols bindings func)
-    (or (= (length symbols) (length bindings)) (error 'assert "mismatch \
-in lengths of symbols and bindings"))
+  (define (expression-context? env) #f)
+  (define (with-bindings env symbols exprs while-bound compile-expr bco)
+    (assert (proper-list? symbols))
+    (assert (= (length symbols) (length exprs)))
     (let ((old-bindings
            (map (lambda (symbol)
                   (hash-table-ref env symbol (lambda () #f)))
                 symbols)))
-      (map (lambda (symbol binding) (hash-table-set! env symbol binding))
-           symbols bindings)
-      (func)
+      (emit-bindings bco symbols exprs env compile-expr)
+      (while-bound)
       (map (lambda (symbol binding) (hash-table-set! env symbol binding))
            symbols old-bindings)))
-  (define (lookup-environment env symbol)
-    (hash-table-ref env symbol #f)))
+  (define (lookup-environment env symbol bco)
+    (or (symbol? symbol) (error 'assert "cannot look up non-symbol" symbol))
+    (hash-table-ref env symbol (lambda() (emit-global bco symbol)))))
