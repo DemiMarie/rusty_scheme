@@ -1,3 +1,4 @@
+use std::ptr;
 use value;
 use std::mem;
 use alloc;
@@ -61,8 +62,17 @@ pub enum Opcode {
     /// Load from constant vector
     LoadConstant,
 
+    /// Load from environment
+    LoadEnvironment,
+
     /// Load from global
-    Load,
+    LoadGlobal,
+
+    /// Store to environment
+    StoreEnvironment,
+
+    /// Store to global
+    StoreGlobal,
 }
 
 
@@ -71,7 +81,6 @@ pub struct ActivationRecord {
     return_address: usize,
 }
 
-use alloc::Allocator;
 use value::Instruction;
 /// The Scheme state.  It has several parts:
 ///
@@ -88,8 +97,8 @@ pub struct State {
     program_counter: usize,
     sp: usize,
     control_stack: Vec<ActivationRecord>,
-    //registers: Vec<Instruction>,
-    heap: alloc::Heap,
+    // registers: Vec<Instruction>,
+    pub heap: alloc::Heap,
     bytecode: Vec<Instruction>,
 }
 
@@ -98,12 +107,22 @@ fn unwind(_stack: &mut alloc::Stack) -> () {
     unimplemented!()
 }
 
+pub fn new() -> self::State {
+    State {
+        program_counter: 0,
+        sp: 0,
+        control_stack: vec![],
+        heap: alloc::Heap::new(1<<16),
+        bytecode: vec![],
+    }
+}
+
 /// This function interprets the Scheme bytecode.
 fn interpret_bytecode(s: &mut State) {
     let pc = &mut s.program_counter;
     let heap = &mut s.heap;
+    heap.environment = ptr::null_mut();
     let sp = &mut s.sp;
-    let mut captured = 
     let fp = 0;
     'main: loop {
         macro_rules! interp_try {
@@ -111,7 +130,7 @@ fn interpret_bytecode(s: &mut State) {
                 {
                     let val: Result<_, _> = $exp;
                     match val {
-                    Ok(x) => x,
+                        Ok(x) => x,
                         Err(_) => {
                             unwind(&mut heap.stack);
                             break 'main
@@ -121,10 +140,9 @@ fn interpret_bytecode(s: &mut State) {
             }
         }
         let Instruction { opcode, src, src2, dst } = s.bytecode[*sp];
-        let (src, src2, dst): (usize, usize, usize) =
-            (src.into(), src2.into(), dst.into());
+        let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
         let opcode = unsafe {
-            if opcode <= mem::transmute(Opcode::Load) {
+            if opcode <= mem::transmute(Opcode::StoreGlobal) {
                 mem::transmute(opcode)
             } else {
                 unreachable!()
@@ -170,17 +188,16 @@ fn interpret_bytecode(s: &mut State) {
                 heap.stack[dst] = arith::exponential(fst, snd)
             }
             Opcode::Closure => {
-                heap.alloc_closure((src as u16) << 7 | src2 as u16,
-                                   src & ::std::i8::MIN as usize == 0,
-                                   &heap.stack[src..src2]);
-                *captured = true
+                heap.alloc_closure(src as u8, src2 as u8, dst);
+                let len = heap.stack.len();
+                heap.environment = Ptr_Val!(heap.stack[len - 1]) as *mut value::Vector
             }
             Opcode::MakeArray => {
                 let _value = alloc::Heap::alloc_vector(heap, &[]);
             }
             Opcode::SetArray => {
                 let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
-                interp_try!(heap.stack[dst].array_set(index, heap.stack[src2].clone()))
+                interp_try!(heap.stack[dst].array_set(index, &heap.stack[src2]))
             }
             Opcode::GetArray => {
                 let index = interp_try!(heap.stack[src]
@@ -213,17 +230,37 @@ fn interpret_bytecode(s: &mut State) {
                 *pc = return_frame.return_address
             }
             Opcode::LoadEnvironment => {
-                let to_be_pushed = if *captured {
-                    heap.environment.array_get(src).unwrap()
+                let to_be_pushed = (if heap.environment.is_null() {
+                    &heap.stack[src]
                 } else {
-                    heap.stack[src]
-                };
-                heap.stack.push(to_be_pushed)
+                    unsafe {
+                        &*value::Value::raw_array_get(heap.environment as *const _, src).unwrap()
+                    }
+                }).clone();
+                heap.stack.push(to_be_pushed.clone())
             }
             Opcode::LoadConstant => {
-                let x = heap.constants[src];
+                let x = unsafe {
+                    (*value::Value::raw_array_get(heap.constants, src).unwrap()).clone()
+                };
                 heap.stack.push(x)
             }
-        };
+            Opcode::StoreEnvironment => {
+                let to_be_stored = heap.stack.pop().unwrap();
+                if heap.environment.is_null() {
+                    heap.stack[src] = to_be_stored
+                } else {
+                    unsafe {
+                        value::Value::raw_array_set(heap.environment, src, to_be_stored).unwrap()
+                    }
+                };
+            }
+            Opcode::LoadGlobal => {
+                unimplemented!()
+            }
+            Opcode::StoreGlobal => {
+                unimplemented!()
+            }
+        }
     }
 }

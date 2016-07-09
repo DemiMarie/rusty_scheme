@@ -42,7 +42,17 @@ pub trait Allocator {
 pub struct Heap {
     tospace: Vec<Value>,
     fromspace: Vec<Value>,
+    pub environment: *mut value::Vector,
+    pub constants: *const value::Vector,
     pub stack: self::Stack,
+}
+
+use std::cell;
+use std::marker;
+#[derive(Debug)]
+pub struct Root<'a> {
+    contents: &'a cell::UnsafeCell<Value>,
+    phantom: marker::PhantomData<cell::Cell<Value>>,
 }
 
 /// Consistency checks on the whole heap (in debug mode only) – sloooow.
@@ -256,7 +266,6 @@ impl Heap {
     }
 
     fn check_space(&mut self, space: usize) -> (usize, usize) {
-        use value::SIZEOF_PTR;
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
         if tospace_space < real_space {
@@ -276,17 +285,24 @@ impl Heap {
         self.stack.push(Value::new(ptr));
     }
 
-    pub fn alloc_closure(&mut self, argcount: u16, vararg: bool,
-                         elements: &[Value]) {
-        let (value_ptr, final_len) = self.check_space(elements.len());
-        let ptr = value_ptr | value::VECTOR_TAG;
-        self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len() + 1));
-        self.tospace.push(Value::new((argcount as usize) << 2 |
-                                     (-(vararg as isize) as usize &
-                                      ::std::isize::MIN as usize)));
-        self.tospace.extend_from_slice(elements);
-        unsafe {
-            self.tospace.set_len(final_len)
+    // Allocates a closure. `src` and `src2` are as found in the opcode.
+    pub fn alloc_closure(&mut self, src: u8, src2: u8, upvalues: usize) {
+        let argcount = (src as u16) << 7 | src2 as u16;
+        let vararg = src & ::std::i8::MIN as u8 == 0;
+        let stack_len = self.stack.len();
+        let (value_ptr, final_len) = self.check_space(stack_len);
+        let ptr = {
+            let elements = &self.stack[stack_len - upvalues..stack_len];
+            let ptr = value_ptr | value::VECTOR_TAG;
+            self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len() + 1));
+            self.tospace.push(Value::new((argcount as usize) << 2 |
+                                         (-(vararg as isize) as usize &
+                                          ::std::isize::MIN as usize)));
+            self.tospace.extend_from_slice(elements);
+            unsafe {
+                self.tospace.set_len(final_len)
+            };
+            ptr
         };
         self.stack.push(Value::new(ptr));
     }
@@ -294,6 +310,8 @@ impl Heap {
         Heap {
             fromspace: Vec::with_capacity(size),
             tospace: Vec::with_capacity(size),
+            environment: ptr::null_mut(),
+            constants: ptr::null(),
             stack: Stack { innards: Vec::with_capacity(1 << 16) },
         }
     }

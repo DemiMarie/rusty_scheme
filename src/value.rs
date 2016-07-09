@@ -42,8 +42,8 @@ pub const SYMBOL_TAG: usize = 0b110;
 /// The tag of Pairs
 pub const PAIR_TAG: usize = 0b111;
 
-//#[cfg(target_pointer_width = "16")]
-//pub const SIZEOF_PTR: usize = 2;
+// #[cfg(target_pointer_width = "16")]
+// pub const SIZEOF_PTR: usize = 2;
 
 #[cfg(target_pointer_width = "32")]
 pub const SIZEOF_PTR: usize = 4;
@@ -52,10 +52,10 @@ pub const SIZEOF_PTR: usize = 4;
 pub const SIZEOF_PTR: usize = 8;
 
 /// The amount of memory occupied by a pair.
-pub const SIZEOF_PAIR: usize = (3*self::SIZEOF_PTR + 0b111) >> 3;
+pub const SIZEOF_PAIR: usize = (3 * self::SIZEOF_PTR + 0b111) >> 3;
 
 /// Bitmask that includes the tag words of an object header.
-pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR*8 - 3);
+pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
 
 /// The header of a pair.
 pub const PAIR_HEADER: usize = HEADER_TAG | SIZEOF_PAIR;
@@ -128,7 +128,7 @@ impl Value {
 
 macro_rules! Ptr_Val {
     ($expr:expr) => {
-        ($expr.contents.get() & !0b111) as *mut Value
+        ($expr.contents.get() & !0b111) as *mut $crate::value::Value
     }
 }
 
@@ -270,9 +270,7 @@ impl Value {
         if self.fixnump() {
             None
         } else {
-            Some(unsafe {
-                *((self.contents.get() & !0b111) as *const usize) & !HEADER_TAG
-            })
+            Some(unsafe { *((self.contents.get() & !0b111) as *const usize) & !HEADER_TAG })
         }
     }
     pub fn set_car(&self, other: Value) -> Result<(), ()> {
@@ -290,13 +288,13 @@ impl Value {
     pub fn car(&self) -> Result<Self, ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).car.clone()) },
-            _ => Err(())
+            _ => Err(()),
         }
     }
     pub fn cdr(&self) -> Result<Self, ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).cdr.clone()) },
-            _ => Err(())
+            _ => Err(()),
         }
     }
     pub fn new(contents: usize) -> Self {
@@ -308,47 +306,54 @@ impl Value {
     pub fn get(&self) -> usize {
         self.contents.get()
     }
-    pub fn array_set(&self, index: usize, other: Value) -> Result<(), String> {
-        let vec = match self.kind() {
-            Kind::Vector(vec) => vec,
-            _ => return Err("can't index a non-vector".to_owned()),
-        };
-        unsafe {
-            if (*vec).header >= index {
-                Err((if (*vec).header & HEADER_TAG == 0 {
+    pub fn array_set(&self, index: usize, other: &Value) -> Result<(), String> {
+        match self.kind() {
+            Kind::Vector(vec) => unsafe { Self::raw_array_set(vec, index, other.clone()) },
+            _ => Err("can't index a non-vector".to_owned()),
+        }
+    }
+    pub unsafe fn raw_array_set(vec: *mut Vector,
+                                index: usize,
+                                other: Value)
+                                -> Result<(), String> {
+        if (*vec).header >= index {
+            Err((if (*vec).header & HEADER_TAG == 0 {
                     "index out of bounds"
                 } else {
                     "can't index a non-record"
-                }).to_owned())
-            } else {
-                (*((vec as usize + index) as *const Value)).set(other);
-                Ok(())
-            }
+                })
+                .to_owned())
+        } else {
+            (*((vec as usize + index) as *const Value)).set(other);
+            Ok(())
         }
     }
     pub fn array_get(&self, index: usize) -> Result<*const Self, String> {
-        let vec = match self.kind() {
-            Kind::Vector(vec) => vec,
-            _ => return Err("can't index a non-vector".to_owned()),
-        };
-        unsafe {
-            if (*vec).header >= index {
-                Err((if (*vec).header & HEADER_TAG == 0 {
+        match self.kind() {
+            Kind::Vector(vec) => unsafe { Self::raw_array_get(vec, index) },
+            _ => Err("can't index a non-vector".to_owned()),
+        }
+    }
+
+    pub unsafe fn raw_array_get(vec: *const Vector, index: usize) -> Result<*const Self, String> {
+        if (*vec).header >= index {
+            Err((if (*vec).header & HEADER_TAG == 0 {
                     "index out of bounds"
                 } else {
                     "can't index a non-record"
-                }).to_owned())
-            } else {
-                Ok((vec as usize + index) as *const Value)
-            }
+                })
+                .to_owned())
+        } else {
+            Ok((vec as usize + index) as *const Value)
         }
     }
+
 
     pub fn kind(&self) -> Kind {
         match self.tag() {
             Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
             Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
-            Tags::Num|Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
+            Tags::Num | Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
             _ => unimplemented!(),
         }
     }
