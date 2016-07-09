@@ -42,6 +42,8 @@ pub const SYMBOL_TAG: usize = 0b110;
 /// The tag of Pairs
 pub const PAIR_TAG: usize = 0b111;
 
+//#[cfg(target_pointer_width = "16")]
+//pub const SIZEOF_PTR: usize = 2;
 
 #[cfg(target_pointer_width = "32")]
 pub const SIZEOF_PTR: usize = 4;
@@ -222,9 +224,9 @@ pub struct Pair {
 #[repr(C)]
 #[derive(Debug)]
 pub struct Closure {
-    pub header: usize,
-    pub bytecode: Value,
-    pub upvalues: [Value],
+    header: usize,
+    pub bytecode: Value, // a BCO
+    pub environment: [Value],
 }
 
 #[repr(C)]
@@ -356,6 +358,13 @@ impl Value {
             _ => Err("not a fixnum"),
         }
     }
+}
+
+#[repr(C)]
+pub struct Function {
+    header: usize,
+    bytecode: Value, // points to a byte code object
+    constants: Value, // points to a a vector of constants
 }
 
 pub struct SchemeError(String);

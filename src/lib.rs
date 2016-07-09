@@ -16,7 +16,9 @@ mod state;
 mod arith;
 mod alloc;
 mod interp;
-mod read;
+//mod read;
+mod api;
+pub use api::*;
 #[cfg(test)]
 mod tests {
     #[test]

@@ -35,20 +35,9 @@
        (or (and (proper-list? binding)
                 (symbol? (car binding))
                 (= (length binding) 2))
-           (error 'syntax #(bad-binding-msg binding))))
+           (error 'syntax bad-binding-msg binding)))
      bindings))
   (define (source-location form) #f)
-  #;(define (emit-lambda-definition immediately-invoked? form args env bco)
-  (let ((locals (bind-variables args)))))
-
-  (define (translate-define form)
-    "Translate a `define` form from (define (a b) c) to
-(define a (lambda (b) c))"
-    (let ((defined (car form)))
-      ;; Transform ((a b) c) to (a . (lambda (b) c))
-      (if (pair? defined)
-          `(,(car defined) (lambda ,(cdr defined) ,@(cdr form)))
-          form)))
 
   ;; Compile a `letrec` expression.  Instead, a macro is used.
   (define (compile-letrec list env bco)

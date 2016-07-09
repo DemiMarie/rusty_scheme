@@ -167,10 +167,10 @@
     (let ((stack-position (stack-depth bco))
           (label-start (incr-counter bco))
           (label-end (incr-counter bco)))
+      (emit bco 'closure label-start label-end variadic? fixed-args)
       (emit bco 'label label-start)
       (body)
-      (emit bco 'label label-end)
-      (emit bco 'closure label-start label-end variadic? fixed-args)))
+      (emit bco 'label label-end)))
 
   (define (emit-apply bco function args)
     (emit bco 'apply function args))

@@ -59,7 +59,7 @@ pub enum Opcode {
     Set,
 
     /// Load from constant vector
-    Constant,
+    LoadConstant,
 
     /// Load from global
     Load,
@@ -73,24 +73,37 @@ pub struct ActivationRecord {
 
 use alloc::Allocator;
 use value::Instruction;
+/// The Scheme state.  It has several parts:
+///
+/// - the program counter (`program_counter`), which stores the current
+///   bytecode instruction position.
+/// - the stack pointer `sp`, which stores the current stack position.
+/// - the control stack `control_stack`, which stores control flow
+///   information.
+/// - The environment pointer `env`, which (if non-NULL) points to the current
+///   environment.
+/// - the bytecode `bytecode`, which stores the bytecode currently being
+///   executed.
 pub struct State {
     program_counter: usize,
     sp: usize,
     control_stack: Vec<ActivationRecord>,
-    registers: Vec<Instruction>,
+    //registers: Vec<Instruction>,
     heap: alloc::Heap,
-    old_sp: usize,
-    bytecode: value::BCO,
+    bytecode: Vec<Instruction>,
 }
 
+/// Unwind the Scheme stack in case of exception.
 fn unwind(_stack: &mut alloc::Stack) -> () {
     unimplemented!()
 }
 
-fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
+/// This function interprets the Scheme bytecode.
+fn interpret_bytecode(s: &mut State) {
     let pc = &mut s.program_counter;
     let heap = &mut s.heap;
     let sp = &mut s.sp;
+    let mut captured = 
     let fp = 0;
     'main: loop {
         macro_rules! interp_try {
@@ -107,8 +120,9 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
                 }
             }
         }
-        let Instruction { opcode, src, src2, dst } = s.bytecode.contents[*sp];
-        let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
+        let Instruction { opcode, src, src2, dst } = s.bytecode[*sp];
+        let (src, src2, dst): (usize, usize, usize) =
+            (src.into(), src2.into(), dst.into());
         let opcode = unsafe {
             if opcode <= mem::transmute(Opcode::Load) {
                 mem::transmute(opcode)
@@ -118,25 +132,21 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
         };
         match opcode {
             Opcode::Cons => {
-                let (fst, snd) = (heap.stack[src].clone(),
-                                  heap.stack[src2].clone());
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 heap.alloc_pair(fst, snd);
                 heap.stack[dst] = heap.stack.pop().unwrap()
             }
             Opcode::Car => heap.stack[dst] = interp_try!(heap.stack[src].car()),
             Opcode::Cdr => heap.stack[dst] = interp_try!(heap.stack[src].cdr()),
-            Opcode::SetCar =>
-                interp_try!(heap.stack[dst].set_car(heap.stack[src].clone())),
-            Opcode::SetCdr =>
-                interp_try!(heap.stack[dst].set_cdr(heap.stack[src].clone())),
+            Opcode::SetCar => interp_try!(heap.stack[dst].set_car(heap.stack[src].clone())),
+            Opcode::SetCdr => interp_try!(heap.stack[dst].set_cdr(heap.stack[src].clone())),
             Opcode::Set => heap.stack[dst] = heap.stack[src].clone(),
             Opcode::Add => {
                 // The hot paths are fixnums and flonums.  They are in an inlined
                 // function.
                 // Most scripts probably do not heavily use complex numbers.
                 // Bignums or rationals will always be slow.
-                let (fst, snd) = (heap.stack[src].clone(),
-                                  heap.stack[src2].clone());
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 heap.stack[dst] = interp_try!(arith::add(heap, &fst, &snd))
             }
             Opcode::Subtract => {
@@ -160,44 +170,60 @@ fn interpret_bytecode<A: Allocator, H, S, L, H_>(s: &mut State) {
                 heap.stack[dst] = arith::exponential(fst, snd)
             }
             Opcode::Closure => {
-                // alloc::Heap::allocate_closure(heap);
-                unimplemented!()
+                heap.alloc_closure((src as u16) << 7 | src2 as u16,
+                                   src & ::std::i8::MIN as usize == 0,
+                                   &heap.stack[src..src2]);
+                *captured = true
             }
             Opcode::MakeArray => {
                 let _value = alloc::Heap::alloc_vector(heap, &[]);
             }
             Opcode::SetArray => {
                 let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
-                interp_try!(heap.stack[dst].array_set(index,
-                                                      heap.stack[src2].clone()))
+                interp_try!(heap.stack[dst].array_set(index, heap.stack[src2].clone()))
             }
             Opcode::GetArray => {
-                let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
+                let index = interp_try!(heap.stack[src]
+                                            .as_fixnum()
+                                            .map_err(|_| ()));
                 heap.stack[dst] = interp_try!(heap.stack[src2]
                                                   .array_get(index)
                                                   .map(|ptr| unsafe { (*ptr).clone() }))
             }
             // Frame layout: activation record below rest of data
             Opcode::Call => {
+                // Type check: called function must be integer.
                 s.control_stack.push(ActivationRecord {
                     return_address: *pc,
                     stack_pointer: fp,
                 });
                 *sp = heap.stack.len()
             }
-            Opcode::Constant => unimplemented!(),
             Opcode::TailCall => {
                 let last = interp_try!(s.control_stack.pop().ok_or("\
                     control stack underflow"));
                 let (first, rest) = heap.stack.split_at_mut(*sp);
                 *pc = last.return_address + 1;
-                first[last.stack_pointer +
-                      1..last.stack_pointer + src +
-                      2].clone_from_slice(rest);
+                first[last.stack_pointer + 1..last.stack_pointer + src + 2].clone_from_slice(rest);
                 *sp = last.stack_pointer
             }
-            Opcode::Return => unimplemented!(),
-            Opcode::Load => unimplemented!(),
+            Opcode::Return => {
+                let return_frame = s.control_stack.pop().unwrap();
+                *sp = return_frame.stack_pointer;
+                *pc = return_frame.return_address
+            }
+            Opcode::LoadEnvironment => {
+                let to_be_pushed = if *captured {
+                    heap.environment.array_get(src).unwrap()
+                } else {
+                    heap.stack[src]
+                };
+                heap.stack.push(to_be_pushed)
+            }
+            Opcode::LoadConstant => {
+                let x = heap.constants[src];
+                heap.stack.push(x)
+            }
         };
     }
 }

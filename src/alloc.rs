@@ -91,6 +91,17 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
 #[cfg(not(debug_assertions))]
 unsafe fn consistency_check(_heap: &Vec<Value>) {}
 
+/// Rounds the size of a heap object up to the nearest multiple of 8 bytes,
+/// expressed in words.
+fn align_word_size(size: usize) -> usize {
+    let size_of_value = ::std::mem::size_of::<Value>();
+    match size_of_value {
+        4 => size + 1 & 0b1,
+        8 => size,
+        _ => ((size * size_of_value + 0b111) & !0b111) / size_of_value,
+    }
+}
+
 /// Relocates a `Value` in the heap.
 ///
 /// This function relocates a `Value` in the Scheme heap.  It takes two
@@ -121,7 +132,7 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
             // End pointer
             let end = tospace.as_mut_ptr().offset(len as isize);
 
-            let amount_to_copy = ((size * size_of_value + 0b111) & !0b111) / size_of_value;
+            let amount_to_copy = align_word_size(size);
 
             // Check that the amount to copy is reasonable
             debug_assert!(amount_to_copy > 0);
@@ -232,10 +243,7 @@ impl DerefMut for Stack {
 impl Heap {
     /// Allocates a Scheme pair, which must be rooted by the caller.
     pub fn alloc_pair(&mut self, car: Value, cdr: Value) {
-        let tospace_space = self.tospace.capacity() - self.tospace.len();
-        if tospace_space < SIZEOF_PAIR {
-            collect(self);
-        }
+        self.check_space(SIZEOF_PAIR);
         self.tospace.push(Value::new(PAIR_HEADER));
         self.tospace.push(car);
         self.tospace.push(cdr);
@@ -247,21 +255,41 @@ impl Heap {
         debug!("Allocated a pair")
     }
 
-    pub fn alloc_vector(&mut self, elements: &[Value]) {
-        let len = elements.len();
+    fn check_space(&mut self, space: usize) -> (usize, usize) {
+        use value::SIZEOF_PTR;
+        let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
-        if tospace_space < (elements.len() + 0b111) & !0b111 {
-            collect(self)
+        if tospace_space < real_space {
+            collect(self);
         }
+        (self.tospace.as_ptr() as usize + self.tospace.len(),
+         self.tospace.len() + real_space)
+    }
+    pub fn alloc_vector(&mut self, elements: &[Value]) {
+        let (value_ptr, final_len) = self.check_space(elements.len());
         self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len()));
-        let ptr = unsafe {
-            self.tospace.as_ptr().offset(len as isize) as usize |
-            value::VECTOR_TAG
-        };
+        let ptr = value_ptr | value::VECTOR_TAG;
         self.tospace.extend_from_slice(elements);
+        unsafe {
+            self.tospace.set_len(final_len)
+        };
         self.stack.push(Value::new(ptr));
     }
 
+    pub fn alloc_closure(&mut self, argcount: u16, vararg: bool,
+                         elements: &[Value]) {
+        let (value_ptr, final_len) = self.check_space(elements.len());
+        let ptr = value_ptr | value::VECTOR_TAG;
+        self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len() + 1));
+        self.tospace.push(Value::new((argcount as usize) << 2 |
+                                     (-(vararg as isize) as usize &
+                                      ::std::isize::MIN as usize)));
+        self.tospace.extend_from_slice(elements);
+        unsafe {
+            self.tospace.set_len(final_len)
+        };
+        self.stack.push(Value::new(ptr));
+    }
     pub fn new(size: usize) -> Self {
         Heap {
             fromspace: Vec::with_capacity(size),

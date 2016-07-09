@@ -10,11 +10,12 @@ pub fn skip_space<R: Read>(x: R) -> Option<u8> {
     }
     return None
 }
+use interp;
 
-pub fn read<A: alloc::Allocator, R: Read>(state: &mut A, file: R, end_char: char) -> (R, value::Value<A>) {
+pub fn read<R: Read>(state: &mut interp::State, file: R, end_char: char) -> (R, value::Value) {
     enum State<'a> {
-        InList(Vec<value::Local<'a>>),
-        InVec(Vec<value::Local<'a>>),
+        InList,
+        InVec,
         ReadEval,
         Recursive(usize),
     };
@@ -26,7 +27,7 @@ pub fn read<A: alloc::Allocator, R: Read>(state: &mut A, file: R, end_char: char
     let run_macros_self_evaluating = |mut value| while let Some(x) = state.pop()
     {
         match x {
-            State::InList(x)|State::InVec(x) => {
+            State::InList|State::InVec => {
                 x.push(value);
                 break
             }
@@ -36,10 +37,11 @@ pub fn read<A: alloc::Allocator, R: Read>(state: &mut A, file: R, end_char: char
     };
     'mainloop: while let Some(mut c) = x.next() {
         match c {
-            '(' => state.push(State::InList(vec![])),
+            '(' => read_state.push(State::InList),
             '\'' => {
-                let new_pair = heap.pair(value::FALSE,
-                                         state.empty_list);
+                heap.push(false);
+                heap.list(1)
+                let new_pair = heap., state.empty_list);
                 current_handle.set(local_pair);
                 local_handle = heap.pair(state.symbol_table.quote, new_pair);
             }
@@ -47,13 +49,13 @@ pub fn read<A: alloc::Allocator, R: Read>(state: &mut A, file: R, end_char: char
                 None => return Err("Missing character after #\\#"),
                 Some(c) => {
                     match c {
-                        '(' => state.push(State::InVec(vec![])),
-                        '.' => state.push(State::ReadEval),
+                        '(' => state.push(ReadState::InVec),
+                        '.' => state.push(ReadState::ReadEval),
                         '\\' => match x.next() {
                             None => return Err("Missing character after \"#\\\""),
-                            Some(c) => c
+                            Some(c) => c,
                         },
-                        _ => unimplemented!(),
+                        'f' => read_state.push(false),
                     }
                     continue 'mainloop
                 }
