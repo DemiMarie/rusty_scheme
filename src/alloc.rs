@@ -5,7 +5,8 @@ use std::mem;
 use std::ptr;
 use std::slice;
 use super::value;
-use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER};
+use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER, SYMBOL_TAG};
+use symbol::SymbolTable;
 #[cfg(debug_assertions)]
 use value::Tags;
 /// An allocator for RustyScheme objects
@@ -34,25 +35,50 @@ pub trait Allocator {
     /// Allocates a rustdata, which contains an arbitrary Rust object
     fn alloc_rustdata<T>(&mut self, object: &T) -> value::RustData;
 
-    // /// Allocates a boxed float on the top of the stack.
-    // fn alloc_float(&mut self, float: f64) -> value::Float;
+// /// Allocates a boxed float on the top of the stack.
+// fn alloc_float(&mut self, float: f64) -> value::Float;
 }
 
+/// An instance of the garbage-collected Scheme heap.
 #[derive(Debug)]
 pub struct Heap {
+    /// The tospace.
     tospace: Vec<Value>,
+
+    /// The fromspace.
     fromspace: Vec<Value>,
+
+    /// The symbol table
+    pub symbol_table: SymbolTable,
+
+    /// The environment of the current closure.
     pub environment: *mut value::Vector,
+
+    /// The constants vector of the current closure.
     pub constants: *const value::Vector,
+
+    /// The execution stack.
     pub stack: self::Stack,
 }
 
 use std::cell;
-use std::marker;
+
+/// A GC root.
+///
+/// A `Root` is a handle to an object on the garbage-collected Scheme heap.
+/// The Scheme garbage collector knows about `Root`s, and ensures that they
+/// stay valid even when a garbage collection occurs.  Therefore, client code
+/// must use `Root`s (or the stack) to store all references to Scheme data.
+///
+/// There are 2 types of `Root`: local roots and persistent roots.  A local
+/// root can only be created from within a callback from the VM and is stack
+/// allocated.  A global root can be created by any code that has a valid
+/// reference to the VM, and may live for as long as the VM is alive.  Global
+/// roots are more expensive in terms of VM resources (they are stored in a
+/// heap-allocated data structure), but are not limited by a scope.
 #[derive(Debug)]
 pub struct Root<'a> {
     contents: &'a cell::UnsafeCell<Value>,
-    phantom: marker::PhantomData<cell::Cell<Value>>,
 }
 
 /// Consistency checks on the whole heap (in debug mode only) – sloooow.
@@ -105,11 +131,15 @@ unsafe fn consistency_check(_heap: &Vec<Value>) {}
 /// expressed in words.
 fn align_word_size(size: usize) -> usize {
     let size_of_value = ::std::mem::size_of::<Value>();
-    match size_of_value {
-        4 => size + 1 & 0b1,
+    debug_assert!((!0b1usize).wrapping_add(2) == 0);
+    let x = match size_of_value {
+        4 => size + 1 & !0b1,
         8 => size,
         _ => ((size * size_of_value + 0b111) & !0b111) / size_of_value,
-    }
+    };
+    debug_assert!((x + 1) & !1 >= x);
+    // assert!(x - size_of_value <= 1);
+    x
 }
 
 /// Relocates a `Value` in the heap.
@@ -152,8 +182,7 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
 
             // Check that the pointer really is to fromspace
             debug_assert!((pointer as usize) <
-                          (fromspace.as_ptr() as usize + fromspace.len() *
-                           size_of!(usize)));
+                          (fromspace.as_ptr() as usize + fromspace.len() * size_of!(usize)));
             debug_assert!(pointer as usize >= fromspace.as_ptr() as usize);
 
             if cfg!(feature = "memcpy-gc") {
@@ -181,16 +210,25 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
 /// Process the heap.
 unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
     let mut offset: isize = 0;
+    use std::isize;
+    assert!(tospace.len() <= isize::MAX as usize);
+    assert!(fromspace.len() <= isize::MAX as usize);
     let current = tospace.as_mut_ptr();
     while offset < tospace.len() as isize {
         let size = (*current.offset(offset)).get() & !HEADER_TAG;
         assert!(size > 0);
         offset += 1;
         if !(*current).leafp() {
-            for _ in 1..size {
+            if !(*current).raw_tag() != SYMBOL_TAG {
+                for _ in 1..size {
+                    relocate(current.offset(offset), tospace, fromspace);
+                    offset += 1
+                }
+            } else {
                 relocate(current.offset(offset), tospace, fromspace);
-                offset += 1
+                offset += size as isize - 1
             }
+            offset = align_word_size(offset as usize) as isize
         }
     }
 }
@@ -221,6 +259,8 @@ fn collect(heap: &mut Heap) {
         debug!("Stack scavanged");
         scavange_heap(&mut heap.tospace, &mut heap.fromspace);
         debug!("Heap scavanged");
+        heap.symbol_table.fixup();
+        debug!("Fixed up symbol table");
         consistency_check(&heap.tospace);
         debug!("Completed second consistency check");
         heap.fromspace.resize(0, Value::new(0));
@@ -254,10 +294,13 @@ impl Heap {
     /// Allocates a Scheme pair, which must be rooted by the caller.
     pub fn alloc_pair(&mut self, car: Value, cdr: Value) {
         self.check_space(SIZEOF_PAIR);
-        self.tospace.push(Value::new(PAIR_HEADER));
-        self.tospace.push(car);
-        self.tospace.push(cdr);
-        let len = self.tospace.len() - 3;
+        let len = if size_of!(usize) < 8 {
+            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER), car, cdr, Value::new(1)]);
+            self.tospace.len() - 4
+        } else {
+            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER), car, cdr]);
+            self.tospace.len() - 3
+        };
         let new_value = Value::new(unsafe {
             self.tospace.as_ptr().offset(len as isize) as usize | value::PAIR_TAG
         });
@@ -272,16 +315,14 @@ impl Heap {
             collect(self);
         }
         (self.tospace.as_ptr() as usize + self.tospace.len(),
-         self.tospace.len() + real_space)
+         align_word_size(self.tospace.len() + real_space))
     }
     pub fn alloc_vector(&mut self, elements: &[Value]) {
         let (value_ptr, final_len) = self.check_space(elements.len());
         self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len()));
         let ptr = value_ptr | value::VECTOR_TAG;
         self.tospace.extend_from_slice(elements);
-        unsafe {
-            self.tospace.set_len(final_len)
-        };
+        unsafe { self.tospace.set_len(final_len) };
         self.stack.push(Value::new(ptr));
     }
 
@@ -299,9 +340,7 @@ impl Heap {
                                          (-(vararg as isize) as usize &
                                           ::std::isize::MIN as usize)));
             self.tospace.extend_from_slice(elements);
-            unsafe {
-                self.tospace.set_len(final_len)
-            };
+            unsafe { self.tospace.set_len(final_len) };
             ptr
         };
         self.stack.push(Value::new(ptr));
@@ -310,6 +349,7 @@ impl Heap {
         Heap {
             fromspace: Vec::with_capacity(size),
             tospace: Vec::with_capacity(size),
+            symbol_table: SymbolTable::new(),
             environment: ptr::null_mut(),
             constants: ptr::null(),
             stack: Stack { innards: Vec::with_capacity(1 << 16) },

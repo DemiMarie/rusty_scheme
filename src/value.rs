@@ -153,25 +153,7 @@ pub struct Value {
 ///
 /// Vector-like things are Scheme values with tag `Tags::Vector`.
 /// They all consist of a header followed by a slice of Scheme values.
-/// The number of Scheme words is always computable by
-///
-/// ```rust
-/// /*
-/// use std::marker::PhantomData;
-/// use value;
-/// let vector = value::Value { phantom: PhantomData, contents: 0 };
-/// if vector.tag() != value::Tags::Vector {
-///     None // not a vector-like thing
-/// } else {
-///     Some(unsafe {
-///         *((vector.contents & !0b111) as *mut usize) &
-///         (!0b111 << (::std::mem::size_of::<usize>()*8 - 3))
-///     })
-/// };
-/// */
-/// ```
-///
-/// which is exposed as the method `len`.
+/// The number of Scheme words is always computable by the `len` method.
 ///
 /// Vector-like things have their own tags, in the 3 most significant bits
 /// of the header word.  They have the following meanings:
@@ -181,11 +163,9 @@ pub struct Value {
 /// |0b000|Vector (chosen to simplify bounds checks)|
 /// |0b001|Record.  The first word points to a record descriptor
 /// used to identify the record type.|
-/// |0b010|Closure.  The first word is a reference to a function object
-/// that stores the function of the closure.|
 /// |Others|Reserved.  These may be later used by the run-time system.
 ///
-/// This struct **cannot** be moved, because it is followed by Scheme
+/// This struct _**cannot**_ be moved, because it is followed by Scheme
 /// objects that are not a part of the object.  As such, it has no public
 /// constructors, and can only be instantiated by reference.
 #[repr(C)]
@@ -201,6 +181,9 @@ pub struct RecordDescriptor {
     id: usize,
 }
 
+
+/// A Scheme record type.  This has the same memory layout as `Vector`,
+/// but with a different header.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Record {
@@ -215,8 +198,13 @@ pub struct Record {
 #[repr(C)]
 #[derive(Debug)]
 pub struct Pair {
+    /// Header.  Always `PAIR_HEADER` (checked by a debug assertion in the GC).
     pub header: usize,
+
+    /// The `car` of the pair.
     pub car: Value,
+
+    /// The `cdr` of the pair.
     pub cdr: Value,
 }
 
