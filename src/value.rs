@@ -102,7 +102,7 @@ impl Value {
     }
     #[inline(always)]
     pub fn leafp(&self) -> bool {
-        self.raw_tag() & 0b11 != 0b11
+        self.raw_tag() & 0b10 != 0b10
     }
     #[inline(always)]
     pub fn both_fixnums(&self, other: &Self) -> bool {
@@ -217,6 +217,25 @@ pub struct Closure {
     pub environment: [Value],
 }
 
+/// This struct stores a symbol.
+///
+/// Contract with runtime: the header length is always the size of the symbol
+/// (as a usize).
+///
+/// Symbols always have tag `value::SYMBOL_TAG`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct Symbol {
+    /// Header for the GC
+    header: usize,
+
+    /// Value (the value of the symbol)
+    pub value: Value,
+
+    /// The name of the symbol
+    pub name: String,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Instruction {
@@ -226,10 +245,15 @@ pub struct Instruction {
     pub dst: u8,
 }
 
+pub struct SymbolValue {
+    backing: *mut Value,
+}
+
 pub enum Kind {
     Pair(*mut Pair),
     Vector(*mut Vector),
     Fixnum(usize),
+    Symbol(*mut Symbol),
 }
 
 /// An object containing compiled Scheme bytecode.  Subject to garbage collection.
@@ -336,15 +360,16 @@ impl Value {
         }
     }
 
-
     pub fn kind(&self) -> Kind {
         match self.tag() {
             Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
             Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
             Tags::Num | Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
+            Tags::Symbol => Kind::Symbol(Ptr_Val!(self) as *mut Symbol),
             _ => unimplemented!(),
         }
     }
+
     pub fn as_fixnum(&self) -> Result<usize, &'static str> {
         match self.kind() {
             Kind::Fixnum(val) => Ok(val),

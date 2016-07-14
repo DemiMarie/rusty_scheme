@@ -84,21 +84,14 @@ pub struct Root<'a> {
 /// Consistency checks on the whole heap (in debug mode only) – sloooow.
 #[cfg(debug_assertions)]
 unsafe fn consistency_check(heap: &Vec<Value>) {
-    let assert_in_heap = |heap: &Vec<_>, ptr: usize| {
-        assert!(ptr >= heap.as_ptr() as usize);
-        let upper_limit = heap.as_ptr() as usize + heap.capacity() * size_of!(Value);
-        assert!(ptr < upper_limit,
-                "Heap pointer out of range: {} >= {}",
-                ptr,
-                upper_limit)
-    };
+    use value::Symbol;
     let mut index = 0;
     while index < heap.len() {
         let mut current = heap[index].clone();
         let len = current.get() as usize & !HEADER_TAG;
         assert!(len > 0);
         index += 1;
-        for _ in 1..len {
+        for x in 1..len {
             current = heap[index].clone();
             match current.tag() {
                 Tags::Num | Tags::Num2 => {
@@ -106,16 +99,33 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
                 }
                 Tags::Pair => {
                     assert!(current.get() & 0b111 == 0b111);
-                    assert!((*Ptr_Val!(current)).get() == PAIR_HEADER);
+                    debug_assert_valid_value(&heap, &current);
+                    if (*Ptr_Val!(current)).get() != PAIR_HEADER {
+                        panic!("internal error: BAD PAIR: header length is \
+                                0x{:x} and not \
+                                0x{:x} at index 0x{:x} into heap and index \
+                                0x{:x} into block",
+                               (*Ptr_Val!(current)).get(),
+                               PAIR_HEADER,
+                               index,
+                               x);
+                    }
                     for i in 1..3 {
-                        assert_in_heap(heap, Ptr_Val!(current).offset(i) as usize)
+                        debug_assert_valid_value(heap,
+                                                 &*(Ptr_Val!(current).offset(i as isize) as *const Value))
                     }
                 }
                 Tags::Vector => {
                     assert!(len > 0);
+                    debug_assert_valid_value(heap, &current);
                     for i in 1..len {
-                        assert_in_heap(heap, Ptr_Val!(current) as usize + i)
+                        debug_assert_valid_value(heap, &*Ptr_Val!(current).offset(i as isize))
                     }
+                }
+                Tags::Symbol => {
+                    assert!(len == size_of!(Symbol) / size_of!(usize));
+                    debug_assert_valid_value(heap, &current);
+                    debug_assert_valid_value(heap, &*Ptr_Val!(current).offset(1))
                 }
                 _ => unimplemented!(),
             }
@@ -151,9 +161,11 @@ fn align_word_size(size: usize) -> usize {
 /// This function takes raw pointers because of aliasing concerns.
 unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
     debug_assert!(tospace.capacity() >= fromspace.len());
-    debug!("Tospace capacity: {}, Fromspace length: {}",
-           tospace.capacity(),
-           fromspace.len());
+    if false {
+        debug!("Tospace capacity: {}, Fromspace length: {}",
+               tospace.capacity(),
+               fromspace.len());
+    }
     let size_of_value: usize = size_of!(Value);
     (*current).size().map(|size| {
         // pointer to head of object being copied
@@ -175,14 +187,17 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
             let amount_to_copy = align_word_size(size);
 
             // Check that the amount to copy is reasonable
-            debug_assert!(amount_to_copy > 0);
+            debug_assert!(amount_to_copy > 0,
+                          "internal error: relocate: zero-sized word");
 
             // Check that the end pointer is aligned
-            debug_assert!(end as usize & 0b111 == 0);
+            debug_assert!(end as usize & 0b111 == 0,
+                          "internal error: relocate: misaligned end pointer");
 
             // Check that the pointer really is to fromspace
             debug_assert!((pointer as usize) <
-                          (fromspace.as_ptr() as usize + fromspace.len() * size_of!(usize)));
+                          fromspace.as_ptr() as usize + fromspace.len() * size_of!(usize),
+                          "internal error: relocate: attempt to relocate pointer not to fromspace");
             debug_assert!(pointer as usize >= fromspace.as_ptr() as usize);
 
             if cfg!(feature = "memcpy-gc") {
@@ -246,6 +261,11 @@ unsafe fn scavange_stack(stack: &mut Vec<Value>,
 fn collect(heap: &mut Heap) {
     debug!("Initiated garbage collection");
     unsafe {
+        if cfg!(debug_assertions) {
+            for i in &heap.stack.innards {
+                debug_assert_valid_value(&heap.tospace, i)
+            }
+        }
         consistency_check(&heap.tospace);
         debug!("Completed first consistency check");
         mem::swap(&mut heap.tospace, &mut heap.fromspace);
@@ -261,6 +281,11 @@ fn collect(heap: &mut Heap) {
         debug!("Heap scavanged");
         heap.symbol_table.fixup();
         debug!("Fixed up symbol table");
+        if cfg!(debug_assertions) {
+            for i in &heap.stack.innards {
+                debug_assert_valid_value(&heap.tospace, i)
+            }
+        }
         consistency_check(&heap.tospace);
         debug!("Completed second consistency check");
         heap.fromspace.resize(0, Value::new(0));
@@ -290,22 +315,50 @@ impl DerefMut for Stack {
     }
 }
 
+pub fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
+    if cfg!(debug_assertions) {
+        let lower_limit = vec.as_ptr() as usize;
+        let upper_limit = lower_limit + vec.len() * size_of!(usize);
+        let contents = i.contents.get();
+        let untagged = contents & !0b111;
+        if !(contents & 0b11 == 0 || (untagged >= lower_limit && untagged < upper_limit)) {
+            let contents = contents;
+            panic!("internal error: argument not fixnum or pointing into \
+                    tospace: {:x}",
+                   contents)
+        }
+    }
+}
+
 impl Heap {
     /// Allocates a Scheme pair, which must be rooted by the caller.
-    pub fn alloc_pair(&mut self, car: Value, cdr: Value) {
+    pub fn alloc_pair(&mut self, car: usize, cdr: usize) {
+        if cfg!(debug_assertions) {
+            for i in &[car, cdr] {
+                debug_assert_valid_value(&self.tospace, &self.stack[*i])
+            }
+        }
+        // unsafe { consistency_check(&self.tospace) }
         self.check_space(SIZEOF_PAIR);
         let len = if size_of!(usize) < 8 {
-            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER), car, cdr, Value::new(1)]);
+            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER),
+                                             self.stack[car].clone(),
+                                             self.stack[cdr].clone(),
+                                             Value::new(1)]);
             self.tospace.len() - 4
         } else {
-            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER), car, cdr]);
+            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER),
+                                             self.stack[car].clone(),
+                                             self.stack[cdr].clone()]);
             self.tospace.len() - 3
         };
         let new_value = Value::new(unsafe {
             self.tospace.as_ptr().offset(len as isize) as usize | value::PAIR_TAG
         });
+        debug_assert_valid_value(&self.tospace, &new_value);
         self.stack.push(new_value);
-        debug!("Allocated a pair")
+        // unsafe { consistency_check(&self.tospace) }
+        // debug!("Allocated a pair")
     }
 
     fn check_space(&mut self, space: usize) -> (usize, usize) {
@@ -317,6 +370,7 @@ impl Heap {
         (self.tospace.as_ptr() as usize + self.tospace.len(),
          align_word_size(self.tospace.len() + real_space))
     }
+
     pub fn alloc_vector(&mut self, elements: &[Value]) {
         let (value_ptr, final_len) = self.check_space(elements.len());
         self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len()));
@@ -371,12 +425,12 @@ mod tests {
                HEADER_TAG,
                PAIR_HEADER,
                SIZEOF_PAIR);
-        heap.alloc_pair(zero.clone(), zero.clone());
+        heap.stack.push(zero);
+        heap.alloc_pair(0, 0);
+        heap.stack[0] = heap.stack.pop().unwrap();
         // debug!("{:?}", heap);
         for i in 1..((1 << 11)) {
-            let old_pair = heap.stack[0].clone();
-            let old_pair2 = old_pair.clone();
-            heap.alloc_pair(old_pair, old_pair2);
+            heap.alloc_pair(0, 0);
             assert_eq!(heap.stack.len(), 2);
             assert_eq!(heap.stack[1].tag(), Tags::Pair);
             heap.stack[0] = heap.stack.pop().unwrap();
@@ -385,14 +439,14 @@ mod tests {
                 assert_eq!(heap.stack[0].tag(), Tags::Pair);
                 assert_eq!(new_pair.size(), Some(3));
                 if let Kind::Pair(ptr) = new_pair.kind() {
-                    assert_eq!((unsafe { (*ptr).car.tag() }), Tags::Pair);
-                    assert_eq!((unsafe { (*ptr).cdr.tag() }), Tags::Pair)
+                    assert_eq!(unsafe { (*ptr).car.tag() }, Tags::Pair);
+                    assert_eq!(unsafe { (*ptr).cdr.tag() }, Tags::Pair)
                 } else {
                     unreachable!()
                 }
             };
             assert_valid(&heap);
-            super::collect(&mut heap);
+            // super::collect(&mut heap);
             assert_valid(&heap);
             assert!(heap.tospace.len() >= 3 * i)
         }

@@ -4,7 +4,7 @@
 
 macro_rules! debug {
     ($($exp:expr),*) => {
-        if cfg!(feature = "debug-logging") {
+        if cfg!(debug_assertions) {
             println!($($exp),*);
         } else {}
     }

@@ -29,6 +29,7 @@ pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
     } else {
         // Slow path.
         Err("non-fixnum addition not yet implemented".to_owned())
+        //
         //self::slow_add(alloc, first, other)
     }
 }
@@ -64,6 +65,7 @@ pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
 pub fn divide(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
            -> Result<Value, String> {
     if first.both_fixnums(other) {
+        let (first, other) = (first.get() & !3, other.get() & !3);
         let res = (first.get() & !1).checked_div(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
            .map(Value::new)

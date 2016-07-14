@@ -1,27 +1,9 @@
 use value;
+use value::Symbol;
 use std::hash::{Hash, Hasher};
 use std::collections;
 use std::cmp::{PartialEq, Eq};
 use std::cell::Cell;
-
-/// This struct stores a symbol.
-///
-/// Contract with runtime: the header length is always the size of the symbol
-/// (as a usize).
-///
-/// Symbols always have tag `value::SYMBOL_TAG`.
-#[repr(C)]
-#[derive(Debug)]
-pub struct Symbol {
-    /// Header for the GC
-    header: usize,
-
-    /// Value (the value of the symbol)
-    value: value::Value,
-
-    /// The name of the symbol
-    name: str,
-}
 
 /// A symbol table.
 ///

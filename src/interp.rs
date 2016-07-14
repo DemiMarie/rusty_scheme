@@ -79,6 +79,7 @@ pub enum Opcode {
 pub struct ActivationRecord {
     stack_pointer: usize,
     return_address: usize,
+    captured: bool,
 }
 
 use value::Instruction;
@@ -112,7 +113,7 @@ pub fn new() -> self::State {
         program_counter: 0,
         sp: 0,
         control_stack: vec![],
-        heap: alloc::Heap::new(1<<16),
+        heap: alloc::Heap::new(1 << 16),
         bytecode: vec![],
     }
 }
@@ -148,10 +149,10 @@ fn interpret_bytecode(s: &mut State) {
                 unreachable!()
             }
         };
+        // let len = heap.stack.len();
         match opcode {
             Opcode::Cons => {
-                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.alloc_pair(fst, snd);
+                heap.alloc_pair(src, src2);
                 heap.stack[dst] = heap.stack.pop().unwrap()
             }
             Opcode::Car => heap.stack[dst] = interp_try!(heap.stack[src].car()),
@@ -160,12 +161,22 @@ fn interpret_bytecode(s: &mut State) {
             Opcode::SetCdr => interp_try!(heap.stack[dst].set_cdr(heap.stack[src].clone())),
             Opcode::Set => heap.stack[dst] = heap.stack[src].clone(),
             Opcode::Add => {
-                // The hot paths are fixnums and flonums.  They are in an inlined
-                // function.
+                // The hot paths are fixnums and flonums.  They are inlined.
                 // Most scripts probably do not heavily use complex numbers.
                 // Bignums or rationals will always be slow.
-                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.stack[dst] = interp_try!(arith::add(heap, &fst, &snd))
+                let (fst, snd) = (heap.stack[src].get(),
+                                  heap.stack[src2].get());
+                if fst & snd & 3 == 0 {
+                    let res = fst.wrapping_add(snd);
+                    if res < fst {
+                        // Overflow
+                        res // TODO: implement bignums
+                    } else {
+                        res
+                    }
+                } else {
+                    unimplemented!() // TODO handle exceptions
+                }
             }
             Opcode::Subtract => {
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
@@ -179,7 +190,8 @@ fn interpret_bytecode(s: &mut State) {
             }
             Opcode::Divide => {
                 // See above.
-                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+                let (fst, snd) = (heap.stack[src].clone(),
+                                  heap.stack[src2].clone());
                 heap.stack[dst] = interp_try!(arith::divide(heap, &fst, &snd))
             }
             Opcode::Power => {
@@ -207,15 +219,19 @@ fn interpret_bytecode(s: &mut State) {
                                                   .array_get(index)
                                                   .map(|ptr| unsafe { (*ptr).clone() }))
             }
+
             // Frame layout: activation record below rest of data
             Opcode::Call => {
                 // Type check: called function must be integer.
                 s.control_stack.push(ActivationRecord {
                     return_address: *pc,
                     stack_pointer: fp,
+                    captured: !heap.environment.is_null(),
                 });
-                *sp = heap.stack.len()
+                *sp = heap.stack.len();
+
             }
+
             Opcode::TailCall => {
                 let last = interp_try!(s.control_stack.pop().ok_or("\
                     control stack underflow"));
@@ -224,19 +240,23 @@ fn interpret_bytecode(s: &mut State) {
                 first[last.stack_pointer + 1..last.stack_pointer + src + 2].clone_from_slice(rest);
                 *sp = last.stack_pointer
             }
+
             Opcode::Return => {
                 let return_frame = s.control_stack.pop().unwrap();
                 *sp = return_frame.stack_pointer;
                 *pc = return_frame.return_address
             }
             Opcode::LoadEnvironment => {
-                let to_be_pushed = (if heap.environment.is_null() {
-                    &heap.stack[src]
-                } else {
-                    unsafe {
-                        &*value::Value::raw_array_get(heap.environment as *const _, src).unwrap()
-                    }
-                }).clone();
+                let to_be_pushed =
+                    (if heap.environment.is_null() {
+                        &heap.stack[src]
+                    } else {
+                        unsafe {
+                            &*value::Value::raw_array_get(heap.environment as *const _, src)
+                                  .unwrap()
+                        }
+                    })
+                    .clone();
                 heap.stack.push(to_be_pushed.clone())
             }
             Opcode::LoadConstant => {
@@ -255,12 +275,29 @@ fn interpret_bytecode(s: &mut State) {
                     }
                 };
             }
-            Opcode::LoadGlobal => {
-                unimplemented!()
-            }
-            Opcode::StoreGlobal => {
-                unimplemented!()
-            }
+            Opcode::LoadGlobal => {}
+            Opcode::StoreGlobal => unimplemented!(),
         }
+    }
+}
+
+#[cfg(none)]
+#[cfg(test)]
+mod tests {
+    use value::{Value, Instruction};
+    use std::cell::Cell;
+    #[test]
+    fn can_cons() {
+        let mut bco = super::new();
+        bco.heap.stack.push(Value { contents: Cell::new(0) });
+        bco.heap.stack.push(Value { contents: Cell::new(0) });
+        assert!(bco.heap.stack.len() == 2);
+        bco.bytecode.push(Instruction {
+            opcode: 0,
+            src: 0,
+            src2: 1,
+            dst: 1,
+        });
+        super::interpret_bytecode(&mut bco);
     }
 }
