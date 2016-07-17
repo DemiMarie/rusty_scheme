@@ -25,6 +25,28 @@
    (srfi :9)
    (environment)
    (bytecode))
+
+  (define (bind-argument symbol env nth form)
+    (hash-table-update!
+     env symbol (lambda (plist) (cons (cons nth (env.depth env)) env) plist)
+     (lambda () '())))
+
+  (define (unbind-argument symbol env form)
+    (hash-table-update!
+     env symbol
+     (lambda (plist)
+       (assert (and (pair? plist)  "Attempt to unbind a variable that was never bound!"))
+       (cdr plist))
+     (lambda ()
+       (assert
+        (and #f "Attempt to unbind a variable that was never bound!")))))
+
+  (define (translate-define form)
+    "Convert `(define (a b) q) to (define a (lambda (b) q))`"
+    (let ((head (car form)))
+      (if (pair? head)
+          `(,(car head) (lambda ,(cdr head) ,(cdr form)))
+          form)))
   (define (check-let-bindings bindings bad-binding-msg
                               bad-all-bindings-msg)
     "Check that `let` bindings are valid"
@@ -81,7 +103,7 @@
   ;; Immediately applied simple lambdas are treated specially.
   ;; Specifically, they are treated as `let` forms.  This allows
   ;; `let` to desugar to `lambda` with no loss of performance.
-  (define (compile-initial-pair head rest-of-form env bco)
+  (define (compile-initial-pair pair head rest-of-form env bco)
     (if (and (eq? (car head) 'lambda)
              (proper-list? head)
              (> (length head) 2))
@@ -101,8 +123,8 @@
               (newline)
               (display (length rest-of-form))
               (newline)
-              (error 'syntax #("Wrong number of arguments \
-to immediately-invoked lambda" pair))))
+              (error 'syntax "Wrong number of arguments \
+to immediately-invoked lambda" pair)))
         (compile-function-call
          (compile-pair head env bco)
          rest-of-form env bco)))
@@ -112,7 +134,7 @@ to immediately-invoked lambda" pair))))
     (let ((rest-of-form (cdr pair))
           (head (car pair)))
       (cond
-       ((pair? head) (compile-initial-pair head rest-of-form env bco))
+       ((pair? head) (compile-initial-pair pair head rest-of-form env bco))
        ((symbol? head)
         (case head
           ((quote) (add-to-constant-vector bco (car rest-of-form)))
@@ -123,9 +145,6 @@ to immediately-invoked lambda" pair))))
           ((lambda) (compile-lambda rest-of-form env bco))
           ((define) (compile-define rest-of-form env bco))
           ((set!)  (compile-set! rest-of-form env bco))
-          ((()) (error
-                 'syntax
-                 "() is not legal Scheme – did you mean '()?"))
           (else (compile-function-call
                  (lookup-environment env head bco) rest-of-form env bco))))
        (else (error 'syntax "Invalid procedure in function call" pair)))))
@@ -135,30 +154,30 @@ to immediately-invoked lambda" pair))))
     "Compile a lambda form to bytecode."
     (let ((list (car form)))
       (if (circular-list? list)
-          (error 'syntax "Circular list in lambda detected"))
+          (error 'syntax "Circular list in lambda detected" list))
       (let-values
-          (((variadic? fixed-args)
-            (let cont ((pair list) (len 0))
+          (((variadic? fixed-args symbols-to-bind)
+            (let cont ((pair list) (len 0)
+                       (symbols '()))
               (cond
                ((pair? pair)
                 (bind-variable env (car pair))
-                (cont (cdr pair) (+ 1 len)))
-               ((null? pair) (values #f len))
+                (cont (cdr pair) (+ 1 len) (cons (car pair) symbols)))
+               ((null? pair) (values #f len symbols))
                ((symbol? pair)
-                (bind-variable env pair)
-                (values #t len))
+                (values #t len symbols))
                (else
-                (error 'syntax "Invalid lambda – non-symbol rest"))))))
-        (emit-lambda-definition variadic? fixed-args
-                                (lambda ()
-                                  (compile-sequence (cdr form) env bco))))))
+                (error 'syntax "Invalid lambda – non-symbol rest" pair))))))
+        (bind-arguments symbols variadic? fixed-args
+                        (lambda ()
+                          (compile-sequence (cdr form) env bco))))))
 
   (define (compile-sequence form env bco)
     "Compile a sequence to bytecode.  Internal defines are properly handled."
     (or (proper-list? form)
-        (error 'syntax "Only proper lists allowed as sequences"))
+        (error 'syntax "Only proper lists allowed as sequences" form))
     (and (null? form)
-         (error 'syntax "Sequences must be of positive length"))
+         (error 'syntax "Sequences must be of positive length" form))
     (if (and (pair? (car form))
              (eq? (caar form) 'define))
         ;; Internal defines must be dealt with
@@ -173,11 +192,11 @@ to immediately-invoked lambda" pair))))
                           (if seen-non-define
                               (error 'syntax
                                      "\"define\" form \
-not allowed in expression position"))
+not allowed in expression position" form))
                           (cons
                            (let ((rest (cdr form)))
                              (or (pair? rest)
-                                 (error 'syntax "Bad `define` form"))
+                                 (error 'syntax "Bad `define` form" form))
                              (let ((defined (car rest)))
                                (if (pair? defined)
                                    `(,(car defined)
@@ -260,6 +279,10 @@ allowed in expression context")
              (compile-pair form env bco))
             ((symbol? form) ; Symbol = variable reference
              (lookup-environment env form bco))
+            ((eq? form '())
+             (error
+                 'syntax
+                 "() is not legal Scheme – did you mean '()?" form))
             (else ; Anything else evaluates to itself
              (emit-constant bco form)))))
       (values main-retval bco))))

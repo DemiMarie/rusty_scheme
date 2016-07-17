@@ -22,8 +22,11 @@
    (srfi :1)
    (srfi :69))
 
-  ;; A Scheme environment
-  (define make-environment make-hash-table)
+  ;; A Scheme environment.
+  ;;
+  ;; A Scheme environment consists of key-value pairs.  The keys are symbols
+  ;; and the values are association lists (of (depth, stack position) pairs).
+  (define (make-environment make-hash-table)
 
   (define (expression-context? env) #f)
   (define (with-bindings env symbols exprs while-bound compile-expr bco)

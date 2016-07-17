@@ -17,6 +17,7 @@
           stack-depth
           memo
           create-bco
+          emit-toplevel-set!
           emit-apply
           emit-jump
           emit-constant
@@ -101,6 +102,8 @@
          bco-len opcode)
         (len-set! bco (+ 1 bco-len))
         bco-len)))
+  (define (emit-toplevel-set! bco symbol form)
+    (emit bco 'toplevel-set! symbol))
 
   (define (emit-global bco symbol)
     (emit bco 'global-load symbol)
