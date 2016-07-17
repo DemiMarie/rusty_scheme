@@ -69,6 +69,10 @@ impl State {
         State(interp::new())
     }
 
+    pub fn execute_bytecode(&mut self) -> Result<(), String> {
+        interp::interpret_bytecode(&mut self.0)
+    }
+
     pub fn push<T: SchemeValue>(&mut self, value: T) -> Result<(),()> {
         Ok(self.0.heap.stack.push(value.to_value()))
     }

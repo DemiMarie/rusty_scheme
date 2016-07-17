@@ -1,6 +1,4 @@
 use std::fs::File;
-use std::io::prelude::*;
-use std::io::stdout;
 use std::mem;
 use std::ptr;
 use std::slice;
@@ -84,7 +82,7 @@ pub struct Root<'a> {
 /// Consistency checks on the whole heap (in debug mode only) – sloooow.
 #[cfg(debug_assertions)]
 unsafe fn consistency_check(heap: &Vec<Value>) {
-    use value::Symbol;
+    use symbol;
     let mut index = 0;
     while index < heap.len() {
         let mut current = heap[index].clone();
@@ -101,14 +99,14 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
                     assert!(current.get() & 0b111 == 0b111);
                     debug_assert_valid_value(&heap, &current);
                     if (*Ptr_Val!(current)).get() != PAIR_HEADER {
-                        panic!("internal error: BAD PAIR: header length is \
+                        bug!("BAD PAIR: header length is \
                                 0x{:x} and not \
                                 0x{:x} at index 0x{:x} into heap and index \
                                 0x{:x} into block",
-                               (*Ptr_Val!(current)).get(),
-                               PAIR_HEADER,
-                               index,
-                               x);
+                             ((*Ptr_Val!(current)).get()),
+                             PAIR_HEADER,
+                             index,
+                             x);
                     }
                     for i in 1..3 {
                         debug_assert_valid_value(heap,
@@ -119,11 +117,12 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
                     assert!(len > 0);
                     debug_assert_valid_value(heap, &current);
                     for i in 1..len {
-                        debug_assert_valid_value(heap, &*Ptr_Val!(current).offset(i as isize))
+                        debug_assert_valid_value(heap,
+                                                 &*Ptr_Val!(current).offset(i as isize))
                     }
                 }
                 Tags::Symbol => {
-                    assert!(len == size_of!(Symbol) / size_of!(usize));
+                    assert!(len == size_of!(symbol::Symbol) / size_of!(usize));
                     debug_assert_valid_value(heap, &current);
                     debug_assert_valid_value(heap, &*Ptr_Val!(current).offset(1))
                 }
@@ -274,7 +273,6 @@ fn collect(heap: &mut Heap) {
                heap.fromspace.len() + heap.fromspace.len() / 2);
         heap.tospace.resize(0, Value::new(0));
         debug!("Tospace resized to {}", heap.tospace.capacity());
-        let _ = stdout().flush();
         scavange_stack(&mut heap.stack, &mut heap.tospace, &mut heap.fromspace);
         debug!("Stack scavanged");
         scavange_heap(&mut heap.tospace, &mut heap.fromspace);
@@ -323,9 +321,9 @@ pub fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
         let untagged = contents & !0b111;
         if !(contents & 0b11 == 0 || (untagged >= lower_limit && untagged < upper_limit)) {
             let contents = contents;
-            panic!("internal error: argument not fixnum or pointing into \
-                    tospace: {:x}",
-                   contents)
+            bug!("internal error: argument not fixnum or pointing into \
+                  tospace: {:x}",
+                 contents)
         }
     }
 }
@@ -373,7 +371,9 @@ impl Heap {
 
     pub fn alloc_vector(&mut self, elements: &[Value]) {
         let (value_ptr, final_len) = self.check_space(elements.len());
-        self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len()));
+        self.tospace.push(Value::new(value::VECTOR_HEADER |
+                                     (elements.len() + 2)));
+        self.tospace.push(Value::new(0));
         let ptr = value_ptr | value::VECTOR_TAG;
         self.tospace.extend_from_slice(elements);
         unsafe { self.tospace.set_len(final_len) };

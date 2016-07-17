@@ -1,8 +1,45 @@
+//! The interpreter for RustyScheme.
+//!
+//! This is the part of RustyScheme that actually executes RustyScheme bytecode.
+//! It is a simple `match`-based interpreter.  Future optimizations include using
+//! tail calls to implement the equivalent of computed gotos.
+//!
+//! The entry point is in `self::interpret_bytecode`.  Upon entering this
+//! function (ex. from a Rust API call), the called function must be at the
+//! bottom of the stack, followed by the arguments.
+//!
+//! Upon a Scheme->Scheme function call, the data stack layout is:
+//!
+//! |--------------------|
+//! | arguments          |
+//! |--------------------|
+//! | caller function    |
+//! |--------------------|
+//!
+//! and the control stack layout is:
+//!
+//! |--------------------|
+//! | return address     |
+//! |--------------------|
+//! | old frame pointer  |
+//! |--------------------|
+//! | captured?          |
+//! |--------------------|
+//!
+//! but these three objects are all held in a single Rust struct.
+//!
+//! `const STACK_OFFSET: usize` holds the difference between the old stack
+//! pointer and the new frame pointer. `captured?` holds whether the Scheme
+//! environment has been captured.
+
 use std::ptr;
 use value;
 use std::mem;
 use alloc;
 use arith;
+
+const STACK_OFFSET: usize = 1;
+
 #[repr(u8)]
 pub enum Opcode {
     /// `cons`
@@ -65,11 +102,17 @@ pub enum Opcode {
     /// Load from environment
     LoadEnvironment,
 
+    /// Load from argument
+    LoadArgument,
+
     /// Load from global
     LoadGlobal,
 
     /// Store to environment
     StoreEnvironment,
+
+    /// Store to argument
+    StoreArgument,
 
     /// Store to global
     StoreGlobal,
@@ -77,8 +120,8 @@ pub enum Opcode {
 
 
 pub struct ActivationRecord {
-    stack_pointer: usize,
     return_address: usize,
+    frame_pointer: usize,
     captured: bool,
 }
 
@@ -102,12 +145,11 @@ pub struct State {
     pub heap: alloc::Heap,
     bytecode: Vec<Instruction>,
 }
-
-/// Unwind the Scheme stack in case of exception.
-fn unwind(_stack: &mut alloc::Stack) -> () {
-    unimplemented!()
-}
-
+// Unwind the Scheme stack in case of exception.
+// fn unwind(_stack: &mut alloc::Stack) -> () {
+// unimplemented!()
+// }
+//
 pub fn new() -> self::State {
     State {
         program_counter: 0,
@@ -119,12 +161,12 @@ pub fn new() -> self::State {
 }
 
 /// This function interprets the Scheme bytecode.
-fn interpret_bytecode(s: &mut State) {
+pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
     let pc = &mut s.program_counter;
     let heap = &mut s.heap;
     heap.environment = ptr::null_mut();
     let sp = &mut s.sp;
-    let fp = 0;
+    let mut fp = 0;
     'main: loop {
         macro_rules! interp_try {
             ($exp: expr) => {
@@ -155,44 +197,63 @@ fn interpret_bytecode(s: &mut State) {
                 heap.alloc_pair(src, src2);
                 heap.stack[dst] = heap.stack.pop().unwrap()
             }
-            Opcode::Car => heap.stack[dst] = interp_try!(heap.stack[src].car()),
-            Opcode::Cdr => heap.stack[dst] = interp_try!(heap.stack[src].cdr()),
-            Opcode::SetCar => interp_try!(heap.stack[dst].set_car(heap.stack[src].clone())),
-            Opcode::SetCdr => interp_try!(heap.stack[dst].set_cdr(heap.stack[src].clone())),
+            Opcode::Car =>
+                heap.stack[dst] = try!(heap.stack[src]
+                                       .car()
+                                       .map_err(|()|
+                                                "Attempt to take the car of a \
+                                                 non-pair".to_owned())),
+            Opcode::Cdr =>
+                heap.stack[dst] = try!(heap.stack[src]
+                                       .cdr()
+                                       .map_err(|()|
+                                                "Attempt to take the cdr of a \
+                                                 non-pair".to_owned())),
+            Opcode::SetCar =>
+                try!(heap.stack[dst]
+                     .set_car(heap.stack[src].clone())
+                     .map_err(|()|
+                              "Attempt to set the car of a \
+                               non-pair".to_owned())),
+            Opcode::SetCdr =>
+                try!(heap.stack[dst]
+                     .set_cdr(heap.stack[src].clone())
+                     .map_err(|()|
+                              "Attempt to set the cdr of a \
+                               non-pair".to_owned())),
             Opcode::Set => heap.stack[dst] = heap.stack[src].clone(),
             Opcode::Add => {
                 // The hot paths are fixnums and flonums.  They are inlined.
                 // Most scripts probably do not heavily use complex numbers.
                 // Bignums or rationals will always be slow.
-                let (fst, snd) = (heap.stack[src].get(),
-                                  heap.stack[src2].get());
-                if fst & snd & 3 == 0 {
+                let (fst, snd) = (heap.stack[src].get(), heap.stack[src2].get());
+                heap.stack.push(if fst & snd & 3 == 0 {
                     let res = fst.wrapping_add(snd);
                     if res < fst {
                         // Overflow
-                        res // TODO: implement bignums
+                        value::Value::new(res) // TODO: implement bignums
                     } else {
-                        res
+                        value::Value::new(res)
                     }
                 } else {
-                    unimplemented!() // TODO handle exceptions
-                }
+                    return Err("wrong type to add".to_owned())
+                })
             }
             Opcode::Subtract => {
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 // See above.
-                heap.stack[dst] = interp_try!(arith::subtract(heap, &fst, &snd))
+                heap.stack[dst] =
+                    try!(arith::subtract(heap, &fst, &snd))
             }
             Opcode::Multiply => {
                 // See above.
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.stack[dst] = interp_try!(arith::multiply(heap, &fst, &snd))
+                heap.stack[dst] = try!(arith::multiply(heap, &fst, &snd))
             }
             Opcode::Divide => {
                 // See above.
-                let (fst, snd) = (heap.stack[src].clone(),
-                                  heap.stack[src2].clone());
-                heap.stack[dst] = interp_try!(arith::divide(heap, &fst, &snd))
+                let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+                heap.stack[dst] = try!(arith::divide(heap, &fst, &snd))
             }
             Opcode::Power => {
                 // See above.
@@ -208,44 +269,50 @@ fn interpret_bytecode(s: &mut State) {
                 let _value = alloc::Heap::alloc_vector(heap, &[]);
             }
             Opcode::SetArray => {
-                let index = interp_try!(heap.stack[src].as_fixnum().map_err(|_| ()));
-                interp_try!(heap.stack[dst].array_set(index, &heap.stack[src2]))
+                let index = try!(heap.stack[src]
+                                 .as_fixnum());
+                try!(heap.stack[dst]
+                     .array_set(index, &heap.stack[src2]))
             }
             Opcode::GetArray => {
-                let index = interp_try!(heap.stack[src]
-                                            .as_fixnum()
-                                            .map_err(|_| ()));
-                heap.stack[dst] = interp_try!(heap.stack[src2]
-                                                  .array_get(index)
-                                                  .map(|ptr| unsafe { (*ptr).clone() }))
+                let index = try!(heap.stack[src]
+                                     .as_fixnum());
+                heap.stack[dst] = try!(heap.stack[src2]
+                                           .array_get(index)
+                                           .map(|ptr| unsafe { (*ptr).clone() }))
             }
 
             // Frame layout: activation record below rest of data
             Opcode::Call => {
+                let frame_pointer = *sp - src - 1;
                 // Type check: called function must be integer.
                 s.control_stack.push(ActivationRecord {
                     return_address: *pc,
-                    stack_pointer: fp,
+                    frame_pointer: frame_pointer,
                     captured: !heap.environment.is_null(),
                 });
+                *pc = 0;
                 *sp = heap.stack.len();
-
+                fp = frame_pointer
             }
 
             Opcode::TailCall => {
-                let last = interp_try!(s.control_stack.pop().ok_or("\
-                    control stack underflow"));
-                let (first, rest) = heap.stack.split_at_mut(*sp);
-                *pc = last.return_address + 1;
-                first[last.stack_pointer + 1..last.stack_pointer + src + 2].clone_from_slice(rest);
-                *sp = last.stack_pointer
+                let (first, rest) = heap.stack.split_at_mut(*sp - src - 1);
+                *pc = 0;
+                *sp = fp + src + 1;
+                first[fp..*sp].clone_from_slice(rest);
             }
 
             Opcode::Return => {
-                let return_frame = s.control_stack.pop().unwrap();
-                *sp = return_frame.stack_pointer;
-                *pc = return_frame.return_address
+                if let Some(return_frame) = s.control_stack.pop() {
+                    *sp = fp;
+                    *pc = return_frame.return_address;
+                    fp = return_frame.frame_pointer
+                } else {
+                    return Ok(())
+                }
             }
+
             Opcode::LoadEnvironment => {
                 let to_be_pushed =
                     (if heap.environment.is_null() {
@@ -265,6 +332,17 @@ fn interpret_bytecode(s: &mut State) {
                 };
                 heap.stack.push(x)
             }
+
+            Opcode::LoadArgument => {
+                let x = heap.stack[fp + 1 + src].clone();
+                heap.stack.push(x)
+            }
+
+            Opcode::StoreArgument => {
+                let x = heap.stack.pop().unwrap();
+                heap.stack[fp + 1 + src] = x
+            }
+
             Opcode::StoreEnvironment => {
                 let to_be_stored = heap.stack.pop().unwrap();
                 if heap.environment.is_null() {

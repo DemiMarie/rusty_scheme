@@ -15,6 +15,7 @@
 
 use std::cell::Cell;
 use std::mem;
+use symbol;
 
 // Same set used by Femtolisp
 /// The tag of `fixnum`s
@@ -217,25 +218,6 @@ pub struct Closure {
     pub environment: [Value],
 }
 
-/// This struct stores a symbol.
-///
-/// Contract with runtime: the header length is always the size of the symbol
-/// (as a usize).
-///
-/// Symbols always have tag `value::SYMBOL_TAG`.
-#[repr(C)]
-#[derive(Debug)]
-pub struct Symbol {
-    /// Header for the GC
-    header: usize,
-
-    /// Value (the value of the symbol)
-    pub value: Value,
-
-    /// The name of the symbol
-    pub name: String,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Instruction {
@@ -253,7 +235,7 @@ pub enum Kind {
     Pair(*mut Pair),
     Vector(*mut Vector),
     Fixnum(usize),
-    Symbol(*mut Symbol),
+    Symbol(*mut symbol::Symbol),
 }
 
 /// An object containing compiled Scheme bytecode.  Subject to garbage collection.
@@ -348,6 +330,7 @@ impl Value {
     }
 
     pub unsafe fn raw_array_get(vec: *const Vector, index: usize) -> Result<*const Self, String> {
+        let index = index + 2;
         if (*vec).header >= index {
             Err((if (*vec).header & HEADER_TAG == 0 {
                     "index out of bounds"
@@ -365,7 +348,7 @@ impl Value {
             Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
             Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
             Tags::Num | Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
-            Tags::Symbol => Kind::Symbol(Ptr_Val!(self) as *mut Symbol),
+            Tags::Symbol => Kind::Symbol(Ptr_Val!(self) as *mut symbol::Symbol),
             _ => unimplemented!(),
         }
     }
