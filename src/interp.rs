@@ -162,27 +162,14 @@ pub fn new() -> self::State {
 
 /// This function interprets the Scheme bytecode.
 pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
+    use value::Kind;
     let pc = &mut s.program_counter;
     let heap = &mut s.heap;
     heap.environment = ptr::null_mut();
     let sp = &mut s.sp;
     let mut fp = 0;
     'main: loop {
-        macro_rules! interp_try {
-            ($exp: expr) => {
-                {
-                    let val: Result<_, _> = $exp;
-                    match val {
-                        Ok(x) => x,
-                        Err(_) => {
-                            unwind(&mut heap.stack);
-                            break 'main
-                        }
-                    }
-                }
-            }
-        }
-        let Instruction { opcode, src, src2, dst } = s.bytecode[*sp];
+        let Instruction { opcode, src, src2, dst } = s.bytecode[*pc];
         let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
         let opcode = unsafe {
             if opcode <= mem::transmute(Opcode::StoreGlobal) {
@@ -195,33 +182,47 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
         match opcode {
             Opcode::Cons => {
                 heap.alloc_pair(src, src2);
-                heap.stack[dst] = heap.stack.pop().unwrap()
+                heap.stack[dst] = heap.stack.pop().unwrap();
+                *pc += 1;
             }
-            Opcode::Car =>
-                heap.stack[dst] = try!(heap.stack[src]
-                                       .car()
-                                       .map_err(|()|
-                                                "Attempt to take the car of a \
-                                                 non-pair".to_owned())),
-            Opcode::Cdr =>
-                heap.stack[dst] = try!(heap.stack[src]
-                                       .cdr()
-                                       .map_err(|()|
-                                                "Attempt to take the cdr of a \
-                                                 non-pair".to_owned())),
-            Opcode::SetCar =>
+            Opcode::Car => {
+                heap.stack[dst] =
+                    try!(heap.stack[src]
+                         .car()
+                         .map_err(|()|
+                                  "Attempt to take the car of a \
+                                   non-pair".to_owned()));
+                *pc += 1;
+            }
+            Opcode::Cdr => {
+                heap.stack[dst] =
+                    try!(heap.stack[src]
+                         .cdr()
+                         .map_err(|()|
+                                  "Attempt to take the cdr of a \
+                                   non-pair".to_owned()));
+                *pc += 1;
+            }
+            Opcode::SetCar => {
                 try!(heap.stack[dst]
                      .set_car(heap.stack[src].clone())
                      .map_err(|()|
                               "Attempt to set the car of a \
-                               non-pair".to_owned())),
-            Opcode::SetCdr =>
+                               non-pair".to_owned()));
+                *pc += 1;
+            }
+            Opcode::SetCdr => {
                 try!(heap.stack[dst]
                      .set_cdr(heap.stack[src].clone())
                      .map_err(|()|
                               "Attempt to set the cdr of a \
-                               non-pair".to_owned())),
-            Opcode::Set => heap.stack[dst] = heap.stack[src].clone(),
+                               non-pair".to_owned()));
+                *pc += 1;
+            }
+            Opcode::Set => {
+                heap.stack[dst] = heap.stack[src].clone();
+                *pc += 1;
+            }
             Opcode::Add => {
                 // The hot paths are fixnums and flonums.  They are inlined.
                 // Most scripts probably do not heavily use complex numbers.
@@ -237,49 +238,66 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                     }
                 } else {
                     return Err("wrong type to add".to_owned())
-                })
+                });
+                *pc += 1;
             }
+
             Opcode::Subtract => {
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 // See above.
                 heap.stack[dst] =
-                    try!(arith::subtract(heap, &fst, &snd))
+                    try!(arith::subtract(heap, &fst, &snd));
+                *pc += 1;
             }
+
             Opcode::Multiply => {
                 // See above.
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.stack[dst] = try!(arith::multiply(heap, &fst, &snd))
+                heap.stack[dst] = try!(arith::multiply(heap, &fst, &snd));
+                *pc += 1;
             }
+
             Opcode::Divide => {
                 // See above.
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.stack[dst] = try!(arith::divide(heap, &fst, &snd))
+                heap.stack[dst] = try!(arith::divide(heap, &fst, &snd));
+                *pc += 1;
             }
+
             Opcode::Power => {
                 // See above.
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-                heap.stack[dst] = arith::exponential(fst, snd)
+                heap.stack[dst] = arith::exponential(fst, snd);
+                *pc += 1;
             }
+
             Opcode::Closure => {
                 heap.alloc_closure(src as u8, src2 as u8, dst);
                 let len = heap.stack.len();
-                heap.environment = Ptr_Val!(heap.stack[len - 1]) as *mut value::Vector
+                heap.environment = Ptr_Val!(heap.stack[len - 1]) as *mut value::Vector;
+                *pc += 1;
             }
+
             Opcode::MakeArray => {
                 let _value = alloc::Heap::alloc_vector(heap, &[]);
+                *pc += 1;
             }
+
             Opcode::SetArray => {
                 let index = try!(heap.stack[src]
                                  .as_fixnum());
                 try!(heap.stack[dst]
-                     .array_set(index, &heap.stack[src2]))
+                     .array_set(index, &heap.stack[src2]));
+                *pc += 1;
             }
+
             Opcode::GetArray => {
                 let index = try!(heap.stack[src]
-                                     .as_fixnum());
+                                 .as_fixnum());
                 heap.stack[dst] = try!(heap.stack[src2]
-                                           .array_get(index)
-                                           .map(|ptr| unsafe { (*ptr).clone() }))
+                                       .array_get(index)
+                                       .map(|ptr| unsafe { (*ptr).clone() }));
+                *pc += 1;
             }
 
             // Frame layout: activation record below rest of data
@@ -293,7 +311,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 });
                 *pc = 0;
                 *sp = heap.stack.len();
-                fp = frame_pointer
+                fp = frame_pointer;
             }
 
             Opcode::TailCall => {
@@ -320,27 +338,33 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                     } else {
                         unsafe {
                             &*value::Value::raw_array_get(heap.environment as *const _, src)
-                                  .unwrap()
+                                .unwrap()
                         }
                     })
                     .clone();
-                heap.stack.push(to_be_pushed.clone())
+                heap.stack.push(to_be_pushed.clone());
+                *pc += 1;
             }
+
             Opcode::LoadConstant => {
                 let x = unsafe {
-                    (*value::Value::raw_array_get(heap.constants, src).unwrap()).clone()
+                    (*value::Value::raw_array_get(heap.constants,
+                                                  src).unwrap()).clone()
                 };
-                heap.stack.push(x)
+                heap.stack.push(x);
+                *pc += 1;
             }
 
             Opcode::LoadArgument => {
                 let x = heap.stack[fp + 1 + src].clone();
-                heap.stack.push(x)
+                heap.stack.push(x);
+                *pc += 1;
             }
 
             Opcode::StoreArgument => {
                 let x = heap.stack.pop().unwrap();
-                heap.stack[fp + 1 + src] = x
+                heap.stack[fp + 1 + src] = x;
+                *pc += 1;
             }
 
             Opcode::StoreEnvironment => {
@@ -351,19 +375,37 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                     unsafe {
                         value::Value::raw_array_set(heap.environment, src, to_be_stored).unwrap()
                     }
-                };
+                }
+                *pc += 1;
             }
-            Opcode::LoadGlobal => {}
-            Opcode::StoreGlobal => unimplemented!(),
+
+            Opcode::LoadGlobal => {
+                match heap.stack.pop().map(|x|x.kind()) {
+                    Some(Kind::Symbol(ptr)) =>
+                        heap.stack.push((unsafe { &*ptr }).value.clone()),
+                    _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+                }
+                *pc += 1;
+            }
+
+            Opcode::StoreGlobal => {
+                match heap.stack.pop().map(|x|x.kind()) {
+                    Some(Kind::Symbol(ptr)) =>
+                        (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap(),
+                    _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+                }
+                *pc += 1;
+            }
         }
     }
 }
 
-#[cfg(none)]
 #[cfg(test)]
 mod tests {
     use value::{Value, Instruction};
     use std::cell::Cell;
+    use std::mem;
+    use super::*;
     #[test]
     fn can_cons() {
         let mut bco = super::new();
@@ -376,6 +418,12 @@ mod tests {
             src2: 1,
             dst: 1,
         });
-        super::interpret_bytecode(&mut bco);
+        bco.bytecode.push(Instruction {
+            opcode: unsafe { mem::transmute(Opcode::Return) },
+            src: 0,
+            src2: 0,
+            dst: 0,
+        });
+        assert!(super::interpret_bytecode(&mut bco).is_ok());
     }
 }

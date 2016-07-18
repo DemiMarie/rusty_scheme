@@ -170,14 +170,19 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
         // pointer to head of object being copied
         let pointer: *mut Value = Ptr_Val!(*current);
 
+        debug!("HEADER_TAG is {:b}\n", HEADER_TAG);
+
+        let header = (*pointer).get().clone();
         // Assert that the object header is nonzero.
-        debug_assert!((*pointer).get() != 0,
+        debug_assert!(header != 0,
                       "internal error: copy_value: invalid object header size");
-        if (*pointer).get() == HEADER_TAG {
+        if header & HEADER_TAG == HEADER_TAG {
+            debug_assert!(header == HEADER_TAG,
+                          "Bad header: {ptr:x}\n", ptr = header);
             // Forwarding pointer detected (this header tag is otherwise absurd,
             // since no object can have a size of zero).
             *current = (&*pointer.offset(1)).clone()
-        } else {
+        } else{
             let len = tospace.len();
 
             // End pointer
@@ -313,7 +318,8 @@ impl DerefMut for Stack {
     }
 }
 
-pub fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
+/// Assert a value is valid (in debug mode)
+fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
     if cfg!(debug_assertions) {
         let lower_limit = vec.as_ptr() as usize;
         let upper_limit = lower_limit + vec.len() * size_of!(usize);
@@ -330,6 +336,8 @@ pub fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
 
 impl Heap {
     /// Allocates a Scheme pair, which must be rooted by the caller.
+    ///
+    /// The arguments are stack indexes.
     pub fn alloc_pair(&mut self, car: usize, cdr: usize) {
         if cfg!(debug_assertions) {
             for i in &[car, cdr] {
@@ -369,6 +377,7 @@ impl Heap {
          align_word_size(self.tospace.len() + real_space))
     }
 
+    /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, elements: &[Value]) {
         let (value_ptr, final_len) = self.check_space(elements.len());
         self.tospace.push(Value::new(value::VECTOR_HEADER |
@@ -380,7 +389,7 @@ impl Heap {
         self.stack.push(Value::new(ptr));
     }
 
-    // Allocates a closure. `src` and `src2` are as found in the opcode.
+    /// Allocates a closure. `src` and `src2` are as found in the opcode.
     pub fn alloc_closure(&mut self, src: u8, src2: u8, upvalues: usize) {
         let argcount = (src as u16) << 7 | src2 as u16;
         let vararg = src & ::std::i8::MIN as u8 == 0;
@@ -399,6 +408,8 @@ impl Heap {
         };
         self.stack.push(Value::new(ptr));
     }
+
+    /// Create an instance of the garage collector
     pub fn new(size: usize) -> Self {
         Heap {
             fromspace: Vec::with_capacity(size),

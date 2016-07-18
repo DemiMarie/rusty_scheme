@@ -59,7 +59,12 @@ pub const SIZEOF_PAIR: usize = (3 * self::SIZEOF_PTR + 0b111) >> 3;
 pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
 
 /// The header of a pair.
-pub const PAIR_HEADER: usize = HEADER_TAG | SIZEOF_PAIR;
+pub const PAIR_HEADER: usize = 0b11 << (self::SIZEOF_PTR * 8 - 2) | SIZEOF_PAIR;
+
+#[cfg(none)]
+pub static FALSE: [*const usize; 2] =
+    [PAIR_HEADER as *const usize, (&FALSE) as *const [*const usize; 2] as
+    *const usize];
 
 /// The header of a vector.
 pub const VECTOR_HEADER: usize = 0;

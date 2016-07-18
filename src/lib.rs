@@ -1,4 +1,5 @@
 #![feature(type_ascription)]
+#![feature(static_recursion)]
 #![allow(dead_code)]
 #![deny(warnings)]
 
