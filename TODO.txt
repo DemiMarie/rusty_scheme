@@ -1,0 +1,26 @@
+- Near term:
+ - VM:
+  - Embedding API for the VM
+  - Built-in functions
+  - Reader
+  - Printer
+  - Opcodes:
+   - `LoadT`
+   - `LoadF`
+   - `Load0`
+   - `Load1`
+  - Singleton objects
+   - `#t`
+   - `#f`
+   - `()` (the empty list)
+ - Bytecode compiler
+  - Assembler
+  - Fix type errors
+
+- Medium term:
+ - Documentation for the VM
+ - Provide some basic libraries
+
+- Long term:
+ - JIT compiler
+ - Foreign Function Interface
