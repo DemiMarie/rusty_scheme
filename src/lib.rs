@@ -33,6 +33,7 @@ mod symbol;
 mod interp;
 //mod read;
 mod api;
+pub use interp::Opcode;
 pub use api::*;
 #[cfg(test)]
 mod tests {

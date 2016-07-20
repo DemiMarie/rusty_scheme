@@ -29,38 +29,27 @@
 
 use interp;
 use value;
-use value::Value;
+use alloc;
 
 pub struct State(interp::State);
 
 
 // Unsafe because the return value is not rooted
 pub unsafe trait SchemeValue: Sized {
-    fn to_value(&self) -> value::Value;
+    fn to_value(&self, heap: &mut alloc::Heap) -> value::Value;
     fn of_value(val: &value::Value) -> Result<Self, String>;
 }
 
 unsafe impl SchemeValue for usize {
-    fn to_value(&self) -> Value {
+    fn to_value(&self, _: &mut alloc::Heap) -> value::Value {
         if self & 3 << (size_of!(usize) * 8 - 2) != 0 {
             panic!("bignums not yet supported")
         } else {
-            Value::new(self << 2)
+            value::Value::new(self << 2)
         }
     }
     fn of_value(val: &value::Value) -> Result<Self, String> {
         val.as_fixnum().map_err(|x|x.to_owned())
-    }
-}
-
-#[cfg(none)]
-unsafe impl SchemeValue for str {
-    fn to_value(&self) -> Value {
-        self.len + 0b111 & 0b111
-    }
-    fn of_value(val: &value::Value) -> Result<Self, String> {
-        //val.as_string
-        unimplemented!()
     }
 }
 
@@ -74,7 +63,8 @@ impl State {
     }
 
     pub fn push<T: SchemeValue>(&mut self, value: T) -> Result<(),()> {
-        Ok(self.0.heap.stack.push(value.to_value()))
+        let new_val = value.to_value(&mut self.0.heap);
+        Ok(self.0.heap.stack.push(new_val))
     }
 
     pub fn pop<T: SchemeValue>(&mut self) -> Result<T, String> {
@@ -89,7 +79,139 @@ impl State {
         let len = self.0.heap.stack.len();
         Ok(self.0.heap.alloc_pair(len - 2, len - 1))
     }
+
+    pub fn car(&mut self) -> Result<value::Value, String> {
+        let len = self.0.heap.stack.len();
+        self.0.heap.stack[len - 1]
+            .car()
+            .map_err(|()|
+                     "Attempt to take the car of a \
+                      non-pair".to_owned())
+    }
+    pub fn cdr(&mut self) -> Result<value::Value, String> {
+        let len = self.0.heap.stack.len();
+        self.0.heap.stack[len - 1]
+            .cdr()
+            .map_err(|()|
+                     "Attempt to take the cdr of a \
+                      non-pair".to_owned())
+    }
+    pub fn intern(_object: &str) -> Result<(), String> {
+        unimplemented!()
+    }
 }
+/*
+Opcode::SetCdr => {
+    try!(heap.stack[dst]
+         .set_cdr(heap.stack[src].clone())
+         .map_err(|()|
+                  "Attempt to set the cdr of a \
+                   non-pair".to_owned()));
+    *pc += 1;
+}
+Opcode::Set => {
+    heap.stack[dst] = heap.stack[src].clone();
+    *pc += 1;
+}
+Opcode::Add => {
+    // The hot paths are fixnums and flonums.  They are inlined.
+    // Most scripts probably do not heavily use complex numbers.
+    // Bignums or rationals will always be slow.
+    let (fst, snd) = (heap.stack[src].get(), heap.stack[src2].get());
+    heap.stack.push(if fst & snd & 3 == 0 {
+        let res = fst.wrapping_add(snd);
+        if res < fst {
+            // Overflow
+            value::Value::new(res) // TODO: implement bignums
+        } else {
+            value::Value::new(res)
+        }
+    } else {
+        return Err("wrong type to add".to_owned())
+    });
+    *pc += 1;
+}
+
+Opcode::Subtract => {
+    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+    // See above.
+    heap.stack[dst] =
+        try!(arith::subtract(heap, &fst, &snd));
+    *pc += 1;
+}
+
+Opcode::Multiply => {
+    // See above.
+    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+    heap.stack[dst] = try!(arith::multiply(heap, &fst, &snd));
+    *pc += 1;
+}
+
+Opcode::Divide => {
+    // See above.
+    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+    heap.stack[dst] = try!(arith::divide(heap, &fst, &snd));
+    *pc += 1;
+}
+
+Opcode::Power => {
+    // See above.
+    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
+    heap.stack[dst] = arith::exponential(fst, snd);
+    *pc += 1;
+}
+
+Opcode::MakeArray => {
+    let _value = alloc::Heap::alloc_vector(heap, &[]);
+    *pc += 1;
+}
+
+Opcode::SetArray => {
+    let index = try!(heap.stack[src]
+                     .as_fixnum());
+    try!(heap.stack[dst]
+         .array_set(index, &heap.stack[src2]));
+    *pc += 1;
+}
+
+Opcode::GetArray => {
+    let index = try!(heap.stack[src]
+                     .as_fixnum());
+    heap.stack[dst] = try!(heap.stack[src2]
+                           .array_get(index)
+                           .map(|ptr| unsafe { (*ptr).clone() }));
+    *pc += 1;
+}
+
+Opcode::LoadFalse => {
+    heap.stack.push(value::Value::new(value::FALSE));
+}
+
+Opcode::LoadTrue => {
+    heap.stack.push(value::Value::new(value::TRUE));
+}
+
+Opcode::LoadNil =>
+    heap.stack.push(value::Value::new(value::NIL)),
+
+Opcode::LoadGlobal => {
+    match heap.stack.pop().map(|x|x.kind()) {
+        Some(Kind::Symbol(ptr)) =>
+            heap.stack.push((unsafe { &*ptr }).value.clone()),
+        _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+    }
+    *pc += 1;
+}
+
+Opcode::StoreGlobal => {
+    match heap.stack.pop().map(|x|x.kind()) {
+        Some(Kind::Symbol(ptr)) =>
+            (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap(),
+        _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+    }
+    *pc += 1;
+}
+*/
 
 #[cfg(test)]
 mod tests {

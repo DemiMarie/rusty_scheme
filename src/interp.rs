@@ -108,6 +108,15 @@ pub enum Opcode {
     /// Load from global
     LoadGlobal,
 
+    /// Load `#f`
+    LoadFalse,
+
+    /// Load `#t`
+    LoadTrue,
+
+    /// Load the empty list
+    LoadNil,
+
     /// Store to environment
     StoreEnvironment,
 
@@ -126,6 +135,7 @@ pub struct ActivationRecord {
 }
 
 use value::Instruction;
+
 /// The Scheme state.  It has several parts:
 ///
 /// - the program counter (`program_counter`), which stores the current
@@ -145,11 +155,8 @@ pub struct State {
     pub heap: alloc::Heap,
     bytecode: Vec<Instruction>,
 }
-// Unwind the Scheme stack in case of exception.
-// fn unwind(_stack: &mut alloc::Stack) -> () {
-// unimplemented!()
-// }
-//
+
+/// Create a new Scheme interpreter
 pub fn new() -> self::State {
     State {
         program_counter: 0,
@@ -274,7 +281,8 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             Opcode::Closure => {
                 heap.alloc_closure(src as u8, src2 as u8, dst);
                 let len = heap.stack.len();
-                heap.environment = Ptr_Val!(heap.stack[len - 1]) as *mut value::Vector;
+                heap.environment = unsafe { heap.stack[len - 1].as_ptr() }
+                                                      as *mut value::Vector;
                 *pc += 1;
             }
 
@@ -303,7 +311,6 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             // Frame layout: activation record below rest of data
             Opcode::Call => {
                 let frame_pointer = *sp - src - 1;
-                // Type check: called function must be integer.
                 s.control_stack.push(ActivationRecord {
                     return_address: *pc,
                     frame_pointer: frame_pointer,
@@ -314,6 +321,16 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 fp = frame_pointer;
             }
 
+            Opcode::LoadFalse => {
+                heap.stack.push(value::Value::new(value::FALSE));
+            }
+
+            Opcode::LoadTrue => {
+                heap.stack.push(value::Value::new(value::TRUE));
+            }
+
+            Opcode::LoadNil =>
+                heap.stack.push(value::Value::new(value::NIL)),
             Opcode::TailCall => {
                 let (first, rest) = heap.stack.split_at_mut(*sp - src - 1);
                 *pc = 0;

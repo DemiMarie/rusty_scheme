@@ -14,135 +14,7 @@
 //! |Resources  | As a pointer into a 3-tuple, consisting of a GC header, a pointer to a `struct` that contains an object ID and custom equality, hashing, and other functions, and a pointer into memory not managed by the GC. |
 
 use std::cell::Cell;
-use std::mem;
 use symbol;
-
-// Same set used by Femtolisp
-/// The tag of `fixnum`s
-pub const NUM_TAG: usize = 0b000;
-
-/// The tag of Rust-implemented functions.
-pub const RUST_FUNC_TAG: usize = 0b001;
-
-/// The tag of Scheme-implemented functions.
-pub const FUNCTION_TAG: usize = 0b010;
-
-/// The tag of Scheme vectors, records, and closures.
-pub const VECTOR_TAG: usize = 0b011;
-
-/// The tag of non-`fixnum` immediates, such as the empty list,
-/// end-of-file object, the undefined value, and characters.
-pub const NUM_TAG_2: usize = 0b100;
-
-/// The tag of RustData – Rust values stored on the Scheme heap.
-pub const RUST_DATA_TAG: usize = 0b101;
-
-/// The tag of Symbols.
-pub const SYMBOL_TAG: usize = 0b110;
-
-/// The tag of Pairs
-pub const PAIR_TAG: usize = 0b111;
-
-// #[cfg(target_pointer_width = "16")]
-// pub const SIZEOF_PTR: usize = 2;
-
-#[cfg(target_pointer_width = "32")]
-pub const SIZEOF_PTR: usize = 4;
-
-#[cfg(target_pointer_width = "64")]
-pub const SIZEOF_PTR: usize = 8;
-
-/// The amount of memory occupied by a pair.
-pub const SIZEOF_PAIR: usize = (3 * self::SIZEOF_PTR + 0b111) >> 3;
-
-/// Bitmask that includes the tag words of an object header.
-pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
-
-/// The header of a pair.
-pub const PAIR_HEADER: usize = 0b11 << (self::SIZEOF_PTR * 8 - 2) | SIZEOF_PAIR;
-
-#[cfg(none)]
-pub static FALSE: [*const usize; 2] =
-    [PAIR_HEADER as *const usize, (&FALSE) as *const [*const usize; 2] as
-    *const usize];
-
-/// The header of a vector.
-pub const VECTOR_HEADER: usize = 0;
-
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
-pub enum Tags {
-    Num,
-    RustFunc,
-    Function,
-    Vector,
-    Num2,
-    RustData,
-    Symbol,
-    Pair,
-}
-
-
-impl Value {
-    #[inline(always)]
-    pub fn raw_tag(&self) -> usize {
-        self.get() & 0b111
-    }
-
-    #[inline(always)]
-    pub fn tag(&self) -> Tags {
-        use self::Tags::*;
-        match self.raw_tag() {
-            NUM_TAG => Num,
-            RUST_FUNC_TAG => RustFunc,
-            FUNCTION_TAG => Function,
-            VECTOR_TAG => Vector,
-            NUM_TAG_2 => Num2,
-            RUST_DATA_TAG => RustData,
-            SYMBOL_TAG => Symbol,
-            PAIR_TAG => Pair,
-            _ => unsafe {
-                enum Void {}
-                match mem::transmute::<(),Void>(()) {}
-            },
-        }
-    }
-    #[inline(always)]
-    pub fn leafp(&self) -> bool {
-        self.raw_tag() & 0b10 != 0b10
-    }
-    #[inline(always)]
-    pub fn both_fixnums(&self, other: &Self) -> bool {
-        (self.get() | other.get()) & 0b11 == 0
-    }
-    #[inline(always)]
-    pub fn self_evaluating(&self) -> bool {
-        self.raw_tag() < 6
-    }
-    #[inline(always)]
-    pub fn fixnump(&self) -> bool {
-        self.raw_tag() & 0b11 == 0
-    }
-    #[inline(always)]
-    pub fn pairp(&self) -> bool {
-        self.tag() == Tags::Pair
-    }
-    #[inline(always)]
-    pub fn flonump(&self) -> bool {
-        unimplemented!()
-    }
-}
-
-macro_rules! Ptr_Val {
-    ($expr:expr) => {
-        ($expr.contents.get() & !0b111) as *mut $crate::value::Value
-    }
-}
-
-macro_rules! size_of {
-    ($ty:ty) => {
-        ::std::mem::size_of::<$ty>()
-    }
-}
 
 /// A Scheme value.
 ///
@@ -187,7 +59,6 @@ pub struct RecordDescriptor {
     id: usize,
 }
 
-
 /// A Scheme record type.  This has the same memory layout as `Vector`,
 /// but with a different header.
 #[repr(C)]
@@ -223,6 +94,8 @@ pub struct Closure {
     pub environment: [Value],
 }
 
+
+/// A Scheme bytecode instruction.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Instruction {
@@ -231,6 +104,21 @@ pub struct Instruction {
     pub src2: u8,
     pub dst: u8,
 }
+
+/// The Scheme immediate `#f`
+pub const FALSE: usize = 0x3;
+
+/// The Scheme immediate `#t`
+pub const TRUE: usize = 0xB ;
+
+/// The Scheme empty list `()`
+pub const NIL: usize = 0x13;
+
+/// The Scheme EOF object
+pub const EOF: usize = 0x1B;
+
+/// The Scheme object representing an unspecified value
+pub const UNSPECIFIED: usize = 0x23;
 
 pub struct SymbolValue {
     backing: *mut Value,
@@ -265,31 +153,49 @@ impl Value {
         unimplemented!()
     }
 
+    /// Returns the pointer stored in this object.  The object must not be
+    /// an immediate.
+    pub unsafe fn as_ptr(&self) -> *mut Value {
+        (self.get() & !0b111) as *mut Value
+    }
+
+    /// The heap size of `self`, not including `self`.  Returns `None` for
+    /// immediate objects.
     pub fn size(&self) -> Option<usize> {
-        if self.fixnump() {
+        if self.immediatep() {
             None
         } else {
             Some(unsafe { *((self.contents.get() & !0b111) as *const usize) & !HEADER_TAG })
         }
     }
+
+    /// Set the `car` of a Scheme pair.  Returns `Err(())` if the object
+    /// is not a pair.
     pub fn set_car(&self, other: Value) -> Result<(), ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).car.set(other)) },
             _ => Err(()),
         }
     }
+
+    /// Set the `cdr` of a Scheme pair.  Returns `Err(())` if the object
+    /// is not a pair.
     pub fn set_cdr(&self, other: Value) -> Result<(), ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).cdr.set(other)) },
             _ => Err(()),
         }
     }
+
+    /// Get the `car` of a Scheme pair.  Returns `Err(())` if the object
+    /// is not a pair.
     pub fn car(&self) -> Result<Self, ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).car.clone()) },
             _ => Err(()),
         }
     }
+
     pub fn cdr(&self) -> Result<Self, ()> {
         match self.kind() {
             Kind::Pair(pair) => unsafe { Ok((*pair).cdr.clone()) },
@@ -350,10 +256,14 @@ impl Value {
 
     pub fn kind(&self) -> Kind {
         match self.tag() {
-            Tags::Pair => Kind::Pair(Ptr_Val!(self) as *mut Pair),
-            Tags::Vector => Kind::Vector(Ptr_Val!(self) as *mut Vector),
-            Tags::Num | Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
-            Tags::Symbol => Kind::Symbol(Ptr_Val!(self) as *mut symbol::Symbol),
+            Tags::Pair =>
+                Kind::Pair(unsafe { self.as_ptr() } as *mut Pair),
+            Tags::Vector =>
+                Kind::Vector(unsafe { self.as_ptr() } as *mut Vector),
+            Tags::Num | Tags::Num2 =>
+                Kind::Fixnum(self.contents.get() >> 2),
+            Tags::Symbol =>
+                Kind::Symbol(unsafe { self.as_ptr() } as *mut symbol::Symbol),
             _ => unimplemented!(),
         }
     }
@@ -388,3 +298,131 @@ pub unsafe fn float_val(val: &Value) -> f64 {
 pub struct HashTable;
 pub struct IOPort;
 pub struct RustData;
+
+// Same set used by Femtolisp
+/// The tag of `fixnum`s
+pub const NUM_TAG: usize = 0b000;
+
+/// The tag of Rust-implemented functions.
+pub const RUST_FUNC_TAG: usize = 0b001;
+
+/// The tag of Scheme-implemented functions.
+pub const FUNCTION_TAG: usize = 0b010;
+
+/// The tag of Scheme vectors, records, and closures.
+pub const VECTOR_TAG: usize = 0b011;
+
+/// The tag of non-`fixnum` immediates, such as the empty list,
+/// end-of-file object, the undefined value, and characters.
+pub const NUM_TAG_2: usize = 0b100;
+
+/// The tag of RustData – Rust values stored on the Scheme heap.
+pub const RUST_DATA_TAG: usize = 0b101;
+
+/// The tag of Symbols.
+pub const SYMBOL_TAG: usize = 0b110;
+
+/// The tag of Pairs
+pub const PAIR_TAG: usize = 0b111;
+
+// #[cfg(target_pointer_width = "16")]
+// pub const SIZEOF_PTR: usize = 2;
+
+#[cfg(target_pointer_width = "32")]
+pub const SIZEOF_PTR: usize = 4;
+
+#[cfg(target_pointer_width = "64")]
+pub const SIZEOF_PTR: usize = 8;
+
+/// The amount of memory occupied by a pair.
+pub const SIZEOF_PAIR: usize = (3 * self::SIZEOF_PTR + 0b111) >> 3;
+
+/// Bitmask that includes the tag words of an object header.
+pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
+
+/// The header tag of a pair.
+pub const PAIR_HEADER_TAG: usize = 0b11 << (self::SIZEOF_PTR * 8 - 2);
+
+/// The header of a pair.
+pub const PAIR_HEADER: usize = PAIR_HEADER_TAG | SIZEOF_PAIR;
+
+/// The header of a symbol.
+pub const SYMBOL_HEADER_TAG: usize = 0b101 << (self::SIZEOF_PTR * 8 - 3);
+
+/// The header of a `RustData`.
+pub const RUSTDATA_HEADER_TAG: usize = 0b100 << (self::SIZEOF_PTR * 8 - 3);
+
+/// The header of a vector.
+pub const VECTOR_HEADER_TAG: usize = 0;
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum Tags {
+    Num,
+    RustFunc,
+    Function,
+    Vector,
+    Num2,
+    RustData,
+    Symbol,
+    Pair,
+}
+
+
+impl Value {
+    #[inline(always)]
+    pub fn raw_tag(&self) -> usize {
+        self.get() & 0b111
+    }
+
+    #[inline(always)]
+    pub fn tag(&self) -> Tags {
+        use self::Tags::*;
+        match self.raw_tag() {
+            NUM_TAG => Num,
+            RUST_FUNC_TAG => RustFunc,
+            FUNCTION_TAG => Function,
+            VECTOR_TAG => Vector,
+            NUM_TAG_2 => Num2,
+            RUST_DATA_TAG => RustData,
+            SYMBOL_TAG => Symbol,
+            PAIR_TAG => Pair,
+            _ => unreachable!(),
+        }
+    }
+    #[inline(always)]
+    pub fn leafp(&self) -> bool {
+        self.raw_tag() & 0b10 == 0
+    }
+    #[inline(always)]
+    pub fn both_fixnums(&self, other: &Self) -> bool {
+        (self.get() | other.get()) & 0b11 == 0
+    }
+    #[inline(always)]
+    pub fn self_evaluating(&self) -> bool {
+        self.raw_tag() < 6
+    }
+    #[inline(always)]
+    pub fn fixnump(&self) -> bool {
+        self.raw_tag() & 0b11 == 0
+    }
+    #[inline(always)]
+    pub fn pairp(&self) -> bool {
+        self.tag() == Tags::Pair
+    }
+    #[inline(always)]
+    pub fn flonump(&self) -> bool {
+        unimplemented!()
+    }
+
+    #[inline(always)]
+    pub fn immediatep(&self) -> bool {
+        let val = self.get();
+        val & 0b11 == 0 || val <= 0xFF // special immediates
+    }
+}
+
+macro_rules! size_of {
+    ($ty:ty) => {
+        ::std::mem::size_of::<$ty>()
+    }
+}

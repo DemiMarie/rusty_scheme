@@ -98,19 +98,19 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
                 Tags::Pair => {
                     assert!(current.get() & 0b111 == 0b111);
                     debug_assert_valid_value(&heap, &current);
-                    if (*Ptr_Val!(current)).get() != PAIR_HEADER {
+                    if (*current.as_ptr()).get() != PAIR_HEADER {
                         bug!("BAD PAIR: header length is \
                                 0x{:x} and not \
                                 0x{:x} at index 0x{:x} into heap and index \
                                 0x{:x} into block",
-                             ((*Ptr_Val!(current)).get()),
+                             ((*current.as_ptr()).get()),
                              PAIR_HEADER,
                              index,
                              x);
                     }
                     for i in 1..3 {
                         debug_assert_valid_value(heap,
-                                                 &*(Ptr_Val!(current).offset(i as isize) as *const Value))
+                                                 &*(current.as_ptr().offset(i as isize) as *const Value))
                     }
                 }
                 Tags::Vector => {
@@ -118,13 +118,13 @@ unsafe fn consistency_check(heap: &Vec<Value>) {
                     debug_assert_valid_value(heap, &current);
                     for i in 1..len {
                         debug_assert_valid_value(heap,
-                                                 &*Ptr_Val!(current).offset(i as isize))
+                                                 &*current.as_ptr().offset(i as isize))
                     }
                 }
                 Tags::Symbol => {
                     assert!(len == size_of!(symbol::Symbol) / size_of!(usize));
                     debug_assert_valid_value(heap, &current);
-                    debug_assert_valid_value(heap, &*Ptr_Val!(current).offset(1))
+                    debug_assert_valid_value(heap, &*current.as_ptr().offset(1))
                 }
                 _ => unimplemented!(),
             }
@@ -168,7 +168,7 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
     let size_of_value: usize = size_of!(Value);
     (*current).size().map(|size| {
         // pointer to head of object being copied
-        let pointer: *mut Value = Ptr_Val!(*current);
+        let pointer: *mut Value = (*current).as_ptr();
 
         debug!("HEADER_TAG is {:b}\n", HEADER_TAG);
 
@@ -234,9 +234,31 @@ unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
     assert!(fromspace.len() <= isize::MAX as usize);
     let current = tospace.as_mut_ptr();
     while offset < tospace.len() as isize {
-        let size = (*current.offset(offset)).get() & !HEADER_TAG;
+        let header = (*current.offset(offset)).get();
+        let size = header & !HEADER_TAG;
+        let tag = header & HEADER_TAG;
         assert!(size > 0);
         offset += 1;
+        match tag {
+            value::HEADER_TAG => /* Forwarding pointer */
+                bug!("Forwarding pointer in tospace"),
+            value::PAIR_HEADER_TAG => /* Pair */ {
+                debug_assert!(size == 3)
+            }
+            value::SYMBOL_HEADER_TAG => /* Symbol */ {
+                relocate(current.offset(offset), tospace, fromspace);
+                offset += size as isize - 1;
+                continue;
+            }
+            value::RUSTDATA_HEADER_TAG => /* Rustdata – not scanned by the GC */ {
+                offset += size as isize - 1;
+                continue;
+            }
+            value::VECTOR_HEADER_TAG => /* Vector-like object */ {
+            }
+            _ => bug!("Strange header type {:x}", tag)
+        }
+
         if !(*current).leafp() {
             if !(*current).raw_tag() != SYMBOL_TAG {
                 for _ in 1..size {
@@ -379,8 +401,8 @@ impl Heap {
 
     /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, elements: &[Value]) {
-        let (value_ptr, final_len) = self.check_space(elements.len());
-        self.tospace.push(Value::new(value::VECTOR_HEADER |
+        let (value_ptr, final_len) = self.check_space(elements.len() + 1);
+        self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
                                      (elements.len() + 2)));
         self.tospace.push(Value::new(0));
         let ptr = value_ptr | value::VECTOR_TAG;
@@ -398,7 +420,8 @@ impl Heap {
         let ptr = {
             let elements = &self.stack[stack_len - upvalues..stack_len];
             let ptr = value_ptr | value::VECTOR_TAG;
-            self.tospace.push(Value::new(value::VECTOR_HEADER | elements.len() + 1));
+            self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
+                                         elements.len() + 1));
             self.tospace.push(Value::new((argcount as usize) << 2 |
                                          (-(vararg as isize) as usize &
                                           ::std::isize::MIN as usize)));
