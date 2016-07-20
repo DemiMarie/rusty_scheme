@@ -17,36 +17,27 @@
 
 
 (library
-    (tree-walk (0))
-  (export compile-form)
+    (tree-walk)
+  (export
+   compile-form
+   pp-compiled-form)
   (import
    (rnrs)
-   (srfi :1)
-   (srfi :9)
+   (only (srfi :1) proper-list? circular-list? fold)
+   (only (srfi :43) vector-copy)
+   (only (srfi :69) hash-table-set! hash-table-ref)
    (environment)
-   (bytecode))
+   (bytecode)
+   (ice-9 pretty-print))
 
-  (define (bind-argument symbol env nth form)
-    (hash-table-update!
-     env symbol (lambda (plist) (cons (cons nth (env.depth env)) env) plist)
-     (lambda () '())))
-
-  (define (unbind-argument symbol env form)
-    (hash-table-update!
-     env symbol
-     (lambda (plist)
-       (assert (and (pair? plist)  "Attempt to unbind a variable that was never bound!"))
-       (cdr plist))
-     (lambda ()
-       (assert
-        (and #f "Attempt to unbind a variable that was never bound!")))))
 
   (define (translate-define form)
     "Convert `(define (a b) q) to (define a (lambda (b) q))`"
     (let ((head (car form)))
       (if (pair? head)
-          `(,(car head) (lambda ,(cdr head) ,(cdr form)))
+          `(,(car head) (lambda ,(cdr head) ,@(cdr form)))
           form)))
+
   (define (check-let-bindings bindings bad-binding-msg
                               bad-all-bindings-msg)
     "Check that `let` bindings are valid"
@@ -59,6 +50,7 @@
                 (= (length binding) 2))
            (error 'syntax bad-binding-msg binding)))
      bindings))
+
   (define (source-location form) #f)
 
   ;; Compile a `letrec` expression.  Instead, a macro is used.
@@ -97,7 +89,18 @@
           (cons 'lambda (cons (map car bindings) (cdr list)))
           (map cadr bindings)) env bco 1))
        ((symbol? bindings)
-        (error 'assert "Internal error: not yet implemented: named let"))
+        #;(error 'assert "Internal error: not yet implemented: named let")
+        (compile-form
+         (let ((real-bindings (cadr list)))
+           (if (null? real-bindings)
+               (error 'syntax "Missing bindings in named let" list))
+           (check-let-bindings real-bindings
+                               "invalid \"let\" binding"
+                               "invalid \"let\" bindings")
+           `(letrec ((,bindings
+                      (lambda ,(map car real-bindings)
+                        ,@(cddr list))))
+              (,bindings ,@(map cadr real-bindings)))) env bco))
        (else (error 'syntax (cons "Invalid \"let\" form" list))))))
 
   ;; Immediately applied simple lambdas are treated specially.
@@ -108,69 +111,89 @@
              (proper-list? head)
              (> (length head) 2))
         ;; Immediately applied simple lambda
-        (if (= (length (cadr head)) (length rest-of-form))
-            (with-bindings
-             env (cadr head)
-             (map
-              (lambda (x) (compile-form x env bco 1))
-              rest-of-form)
-             (lambda ()
-               (compile-sequence (cddr head) env bco))
-             (lambda (form) (compile-form form env bco))
-             bco)
-            (begin
-              (display (length (cadr head)))
-              (newline)
-              (display (length rest-of-form))
-              (newline)
-              (error 'syntax "Wrong number of arguments \
-to immediately-invoked lambda" pair)))
+        (let ((arglist (cadr head)))
+          (if (= (length arglist) (length rest-of-form))
+              (begin
+                (for-each (lambda (form symbol)
+                            (compile-form form env bco)
+                            (bind-variable symbol env))
+                          rest-of-form arglist)
+                (compile-sequence (cddr head) env bco)
+                (for-each (lambda (sym) (unbind-argument sym env)) arglist)
+                bco)
+              (begin
+                (display (length (cadr head)))
+                (newline)
+                (display (length rest-of-form))
+                (newline)
+                (error 'syntax "Wrong number of arguments \
+to immediately-invoked lambda" pair))))
         (compile-function-call
          (compile-pair head env bco)
          rest-of-form env bco)))
 
+  
   ;; Compile a pair (the only hard case)
   (define (compile-pair pair env bco)
+    (assert (pair? pair))
     (let ((rest-of-form (cdr pair))
           (head (car pair)))
+      (or (proper-list? rest-of-form)
+          (error 'syntax "Pair to be compiled must be proper list" pair))
       (cond
        ((pair? head) (compile-initial-pair pair head rest-of-form env bco))
        ((symbol? head)
         (case head
-          ((quote) (add-to-constant-vector bco (car rest-of-form)))
+          ((quote)
+           (if (and (pair? rest-of-form) (null? (cdr rest-of-form)))
+               (emit-constant bco (car rest-of-form))
+               (error 'syntax "Bad quote form" pair)))
           ((let) (compile-let rest-of-form env bco))
           ((letrec) (compile-letrec rest-of-form env bco))
           ((begin) (compile-sequence rest-of-form env bco))
           ((if) (compile-if rest-of-form env bco))
           ((lambda) (compile-lambda rest-of-form env bco))
           ((define) (compile-define rest-of-form env bco))
-          ((set!)  (compile-set! rest-of-form env bco))
-          (else (compile-function-call
-                 (lookup-environment env head bco) rest-of-form env bco))))
+          ((defmacro)
+           (hash-table-set! (env.macros env)
+                            (car rest-of-form)
+                            (eval
+                             (cons 'lambda (cdr rest-of-form))
+                             (interaction-environment))))
+          ((set!) (compile-set! rest-of-form env bco))
+          (else
+           (let ((expander
+                  (hash-table-ref (env.macros env) head
+                                  (lambda () #f))))
+             (if expander
+                 (compile-form (expander form) env bco)
+                 (compile-function-call
+                  (lookup-environment env head bco) rest-of-form env bco))))))
        (else (error 'syntax "Invalid procedure in function call" pair)))))
 
   ;; Compile a lambda
   (define (compile-lambda form env bco)
     "Compile a lambda form to bytecode."
+    ;;(assert (env? env))
     (let ((list (car form)))
       (if (circular-list? list)
           (error 'syntax "Circular list in lambda detected" list))
       (let-values
-          (((variadic? fixed-args symbols-to-bind)
+          (((variadic? fixed-args symbols)
             (let cont ((pair list) (len 0)
                        (symbols '()))
               (cond
                ((pair? pair)
-                (bind-variable env (car pair))
-                (cont (cdr pair) (+ 1 len) (cons (car pair) symbols)))
+                (let ((symbol (car pair)))
+                  (bind-argument symbol env)
+                  (cont (cdr pair) (+ 1 len) (cons symbol symbols))))
                ((null? pair) (values #f len symbols))
                ((symbol? pair)
                 (values #t len symbols))
                (else
                 (error 'syntax "Invalid lambda – non-symbol rest" pair))))))
-        (bind-arguments symbols variadic? fixed-args
-                        (lambda ()
-                          (compile-sequence (cdr form) env bco))))))
+        (compile-sequence (cdr form) env bco)
+        (map (lambda (x) (unbind-argument x env)) symbols))))
 
   (define (compile-sequence form env bco)
     "Compile a sequence to bytecode.  Internal defines are properly handled."
@@ -219,7 +242,7 @@ not allowed in expression position" form))
     "Compile a Scheme `if` expression to Scheme bytecode"
     (let ((length-of-pair (length pair)))
       (or (and (>= length-of-pair 2) (<= length-of-pair 3))
-        (error 'syntax "\"if\" takes at least 2 arguments, \
+          (error 'syntax "\"if\" takes at least 2 arguments, \
 but not more than 3")))
     (emit-jump bco
                (lambda ()
@@ -234,26 +257,27 @@ but not more than 3")))
                         (car last-of-form)) env bco)))))
 
   (define (compile-define defined env bco)
-   "Compile a toplevel `define` declaration"
-   (if (expression-context? env)
+    "Compile a toplevel `define` declaration"
+    (if (expression-context? env)
         (error 'syntax "declaration \"define\" not \
 allowed in expression context")
-       #f)
-   (let ((translated (translate-define defined)))
-       (emit-toplevel-set!
-        (car translated)
-        (compile-form (cadr translated) env bco))))
+        #f)
+    (let ((translated (translate-define defined)))
+      (emit-toplevel-set!
+       bco
+       (car translated)
+       (compile-form (cadr translated) env bco))))
 
   (define (compile-function-call function args env bco)
     "Compile an indirect function call"
     (if (circular-list? args)
         (error 'syntax "Illegal function call"))
-      ((if (symbol? function) ; builtin
-           emit-primitive
-           emit-apply)
-       bco
-       function
-       (map (lambda (x) (compile-form x env bco 1)) args)))
+    ((if (symbol? function) ; builtin
+         emit-primitive
+         emit-apply)
+     bco
+     function
+     (map (lambda (x) (compile-form x env bco 1)) args)))
 
   (define (compile-set! form env bco)
     "Compile an assignment (`set!`)"
@@ -281,8 +305,17 @@ allowed in expression context")
              (lookup-environment env form bco))
             ((eq? form '())
              (error
-                 'syntax
-                 "() is not legal Scheme – did you mean '()?" form))
+              'syntax
+              "() is not legal Scheme – did you mean '()?" form))
             (else ; Anything else evaluates to itself
+             (write form)
+             (newline)
              (emit-constant bco form)))))
-      (values main-retval bco))))
+      (values main-retval bco)))
+
+  (define (pp-compiled-form form)
+    (let-values (((_ignored bco)
+                  (compile-form form (env.new)(create-bco))))
+      (pretty-print
+       `#(,(vector-copy (bco.instrs bco) 0 (bco.len bco) #f)
+          ,(vector-copy (bco.consts bco) 0 (bco.consts-len bco) #f))))))
