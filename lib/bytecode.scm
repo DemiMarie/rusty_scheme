@@ -20,7 +20,9 @@
           emit-toplevel-set!
           emit-apply
           emit-primitive
+          emit-stack-reset
           emit-global
+          emit-load
           emit-constant
           emit)
   (import
@@ -106,6 +108,19 @@
   (define (emit-toplevel-set! bco symbol form)
     (emit bco 'toplevel-set! symbol))
 
+  (define (emit-stack-reset bco depth)
+    (emit bco 'stack-reset depth)
+    (stack-depth-set! bco depth))
+
+  (define (emit-load bco arg)
+    (if (pair? arg)
+        (case (cdr arg)
+          ((argument) (emit bco 'load-argument (car arg)))
+          ((global) (emit bco 'load-global (car arg)))
+          ((()) (emit bco 'load-environment (car arg)))
+          (else (error 'assert "bad cdr of arg to be loaded" arg)))
+        (emit bco 'load-environment arg)))
+
   (define (emit-global bco symbol)
     (emit bco 'global-load symbol)
     (let ((new-depth (+ 1 (stack-depth bco))))
@@ -116,7 +131,7 @@
     #;(for-each
     (lambda (x) (emit bco 'load x))
     args)
-    (emit bco prim))
+    (emit bco prim args))
 
   ;; Emit bindings.
   ;; Args: `bco` = bytecode object, `variables` = variables being bound
@@ -168,7 +183,11 @@
       (emit bco 'global-load stack-position other-stack-position))
      ((fixnum? stack-position)
       (emit bco 'load stack-position other-stack-position))
-     (else (error 'assert "invalid stack position"))))
+     ((pair? stack-position)
+      #;(assert (eq? (cdr stack-position) 'argument))
+      (emit bco 'load-argument (car stack-position)))
+     (else
+      (error 'assert "invalid stack position" stack-position))))
 
   (define (emit-lambda-definition bco variadic? fixed-args body)
     (let ((stack-position (stack-depth bco))

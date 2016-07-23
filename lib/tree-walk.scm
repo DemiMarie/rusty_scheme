@@ -32,7 +32,7 @@
 
 
   (define (translate-define form)
-    "Convert `(define (a b) q) to (define a (lambda (b) q))`"
+    "Convert (define (a b) q) to (define a (lambda (b) q))"
     (let ((head (car form)))
       (if (pair? head)
           `(,(car head) (lambda ,(cdr head) ,@(cdr form)))
@@ -74,7 +74,8 @@
         ;; This is an easy error to make, so give a useful
         ;; error message.
         (error 'syntax (cons "Named \"letrec\" not allowed" bindings)))
-       (else (error 'syntax (cons "Invalid \"letrec\" form" list))))))
+       (else
+        (error 'syntax (cons "Invalid \"letrec\" form" list))))))
 
   ;; Compile a `let` form.
   (define (compile-let list env bco)
@@ -101,7 +102,8 @@
                       (lambda ,(map car real-bindings)
                         ,@(cddr list))))
               (,bindings ,@(map cadr real-bindings)))) env bco))
-       (else (error 'syntax (cons "Invalid \"let\" form" list))))))
+       (else
+        (error 'syntax (cons "Invalid \"let\" form" list))))))
 
   ;; Immediately applied simple lambdas are treated specially.
   ;; Specifically, they are treated as `let` forms.  This allows
@@ -113,26 +115,21 @@
         ;; Immediately applied simple lambda
         (let ((arglist (cadr head)))
           (if (= (length arglist) (length rest-of-form))
-              (begin
+              (let ((depth (stack-depth bco)))
                 (for-each (lambda (form symbol)
                             (compile-form form env bco)
                             (bind-variable symbol env))
                           rest-of-form arglist)
                 (compile-sequence (cddr head) env bco)
                 (for-each (lambda (sym) (unbind-argument sym env)) arglist)
-                bco)
-              (begin
-                (display (length (cadr head)))
-                (newline)
-                (display (length rest-of-form))
-                (newline)
-                (error 'syntax "Wrong number of arguments \
-to immediately-invoked lambda" pair))))
+                (emit-stack-reset bco (+ 1 depth))
+                (values (+ 1 depth) bco))
+              (error 'syntax "Wrong number of arguments \
+to immediately-invoked lambda" pair)))
         (compile-function-call
          (compile-pair head env bco)
          rest-of-form env bco)))
 
-  
   ;; Compile a pair (the only hard case)
   (define (compile-pair pair env bco)
     (assert (pair? pair))
@@ -154,11 +151,12 @@ to immediately-invoked lambda" pair))))
           ((if) (compile-if rest-of-form env bco))
           ((lambda) (compile-lambda rest-of-form env bco))
           ((define) (compile-define rest-of-form env bco))
-          ((defmacro)
+          ((define-macro)
            (hash-table-set! (env.macros env)
                             (car rest-of-form)
                             (eval
-                             (cons 'lambda (cdr rest-of-form))
+                             (cons 'lambda (translate-define
+                                            (cdr rest-of-form)))
                              (interaction-environment))))
           ((set!) (compile-set! rest-of-form env bco))
           (else
@@ -169,7 +167,8 @@ to immediately-invoked lambda" pair))))
                  (compile-form (expander form) env bco)
                  (compile-function-call
                   (lookup-environment env head bco) rest-of-form env bco))))))
-       (else (error 'syntax "Invalid procedure in function call" pair)))))
+       (else
+        (error 'syntax "Invalid procedure in function call" pair)))))
 
   ;; Compile a lambda
   (define (compile-lambda form env bco)
@@ -185,13 +184,13 @@ to immediately-invoked lambda" pair))))
               (cond
                ((pair? pair)
                 (let ((symbol (car pair)))
-                  (bind-argument symbol env)
                   (cont (cdr pair) (+ 1 len) (cons symbol symbols))))
                ((null? pair) (values #f len symbols))
                ((symbol? pair)
                 (values #t len symbols))
                (else
                 (error 'syntax "Invalid lambda – non-symbol rest" pair))))))
+        (bind-arguments symbols env)
         (compile-sequence (cdr form) env bco)
         (map (lambda (x) (unbind-argument x env)) symbols))))
 
@@ -236,7 +235,7 @@ not allowed in expression position" form))
             (or seen-non-define
                 (error 'syntax "no expressions in sequence" form))
             (compile-letrec (reverse list-to-compile) env bco)))
-        (map (lambda (form) (compile-form form env bco 1)) form)))
+        (for-each (lambda (form) (compile-form form env bco 1)) form)))
 
   (define (compile-if pair env bco)
     "Compile a Scheme `if` expression to Scheme bytecode"
@@ -272,12 +271,18 @@ allowed in expression context")
     "Compile an indirect function call"
     (if (circular-list? args)
         (error 'syntax "Illegal function call"))
-    ((if (symbol? function) ; builtin
-         emit-primitive
-         emit-apply)
-     bco
-     function
-     (map (lambda (x) (compile-form x env bco 1)) args)))
+    (let
+        ((builtin?
+          (and (pair? function)
+               (eq? (cdr function) 'primitive))))
+      (if (not builtin?)
+          (emit-load bco function))
+      (let ((real-args
+             (length (map (lambda (x)
+                            (compile-form x env bco 1)) args))))
+        (if builtin?
+            (emit-primitive bco (car function) real-args)
+            (emit-apply bco function real-args)))))
 
   (define (compile-set! form env bco)
     "Compile an assignment (`set!`)"
@@ -302,14 +307,12 @@ allowed in expression context")
             ((pair? form) ; Pair = function call OR special form
              (compile-pair form env bco))
             ((symbol? form) ; Symbol = variable reference
-             (lookup-environment env form bco))
+             (emit-load bco (lookup-environment env form bco)))
             ((eq? form '())
              (error
               'syntax
               "() is not legal Scheme – did you mean '()?" form))
             (else ; Anything else evaluates to itself
-             (write form)
-             (newline)
              (emit-constant bco form)))))
       (values main-retval bco)))
 

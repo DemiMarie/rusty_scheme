@@ -13,7 +13,7 @@
    lookup-environment
    expression-context?
    bind-variable
-   bind-argument
+   bind-arguments
    unbind-argument
    env?
    env.new
@@ -25,7 +25,7 @@
    (rnrs)
    (bytecode)
    ;;(only (srfi :1) proper-list?)
-   (srfi :9)
+   (only (srfi :9) define-record-type)
    (only (srfi :69) make-hash-table hash-table-ref hash-table-set!
          hash-table-update!))
 
@@ -60,9 +60,15 @@
                (hash-table-set! table symbol binding))
              symbols old-bindings))))
 
-  (define (bind-argument symbol env)
-    (let ((nth (env.depth env)))
-      (bind-symbol symbol env nth (cons nth 'argument))))
+  (define (bind-arguments symbols env)
+    (let ((nth 0))
+      (define (bind-arguments-internal symbols env)
+        (if (not (null? symbols))
+            (begin
+              (bind-symbol (car symbols) env nth (cons nth 'argument))
+              (set! nth (+ 1 nth))
+              (bind-arguments-internal (cdr symbols) env))))
+      (bind-arguments-internal symbols env)))
 
   (define (bind-variable symbol env)
     (let ((nth (env.depth env)))
@@ -92,15 +98,18 @@
   (define (lookup-environment env symbol bco)
     (or (symbol? symbol)
         (error 'assert "cannot look up non-symbol" symbol))
-    (let ((table (env.table env))
-          (needs-update #f))
-      (let ((old-binding
-             (hash-table-ref table symbol
-                             (lambda ()
-                               (set! needs-update #t)
-                               (list(emit-global bco symbol))))))
-        (if needs-update
-            (begin
-              (hash-table-set! table symbol old-binding)
-              old-binding)
-            (car old-binding))))))
+    (case symbol
+      ;; Built-in functions
+      ((apply
+        ;; Vector ops
+        vector-set! vector-length vector-ref make-vector vector?
+        ;; List ops
+        set-car! set-cdr! cons car cdr pair? cadr cddr
+        ;; Math ops
+        + - * / exp)
+       (cons symbol 'primitive))
+      (else
+       (car
+        (hash-table-ref (env.table env)
+                        symbol
+                        (lambda () (list (cons symbol 'global)))))))))
