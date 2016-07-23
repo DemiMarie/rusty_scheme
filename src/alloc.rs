@@ -1,3 +1,4 @@
+extern crate libc;
 use std::fs::File;
 use std::mem;
 use std::ptr;
@@ -367,7 +368,7 @@ impl Heap {
             }
         }
         // unsafe { consistency_check(&self.tospace) }
-        self.check_space(SIZEOF_PAIR);
+        self.alloc_raw(SIZEOF_PAIR);
         let len = if size_of!(usize) < 8 {
             self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER),
                                              self.stack[car].clone(),
@@ -389,23 +390,23 @@ impl Heap {
         // debug!("Allocated a pair")
     }
 
-    fn check_space(&mut self, space: usize) -> (usize, usize) {
+    pub fn alloc_raw(&mut self, space: usize) -> (*mut libc::c_void, usize) {
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
         if tospace_space < real_space {
             collect(self);
         }
-        (self.tospace.as_ptr() as usize + self.tospace.len(),
+        ((self.tospace.as_ptr() as usize + self.tospace.len())as *mut libc::c_void,
          align_word_size(self.tospace.len() + real_space))
     }
 
     /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, elements: &[Value]) {
-        let (value_ptr, final_len) = self.check_space(elements.len() + 1);
+        let (value_ptr, final_len) = self.alloc_raw(elements.len() + 1);
         self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
                                      (elements.len() + 2)));
         self.tospace.push(Value::new(0));
-        let ptr = value_ptr | value::VECTOR_TAG;
+        let ptr = value_ptr as usize | value::VECTOR_TAG;
         self.tospace.extend_from_slice(elements);
         unsafe { self.tospace.set_len(final_len) };
         self.stack.push(Value::new(ptr));
@@ -416,10 +417,10 @@ impl Heap {
         let argcount = (src as u16) << 7 | src2 as u16;
         let vararg = src & ::std::i8::MIN as u8 == 0;
         let stack_len = self.stack.len();
-        let (value_ptr, final_len) = self.check_space(stack_len);
+        let (value_ptr, final_len) = self.alloc_raw(stack_len);
         let ptr = {
             let elements = &self.stack[stack_len - upvalues..stack_len];
-            let ptr = value_ptr | value::VECTOR_TAG;
+            let ptr = value_ptr as usize | value::VECTOR_TAG;
             self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
                                          elements.len() + 1));
             self.tospace.push(Value::new((argcount as usize) << 2 |
