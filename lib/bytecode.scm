@@ -127,11 +127,11 @@
       (stack-depth-set! bco new-depth)
       new-depth))
 
-  (define (emit-primitive bco prim args)
+  (define (emit-primitive bco prim)
     #;(for-each
     (lambda (x) (emit bco 'load x))
     args)
-    (emit bco prim args))
+    (emit bco prim))
 
   ;; Emit bindings.
   ;; Args: `bco` = bytecode object, `variables` = variables being bound
@@ -177,15 +177,15 @@
              (emit bco 'load-constant-index
                    (if index index (add-to-constant-vector bco object))))))))
 
-  (define (emit-set! bco stack-position other-stack-position)
+  (define (emit-set! bco stack-position)
     (cond
      ((symbol? stack-position)
-      (emit bco 'global-load stack-position other-stack-position))
+      (emit bco 'global-load stack-position))
      ((fixnum? stack-position)
-      (emit bco 'load stack-position other-stack-position))
+      (emit bco 'store-environment stack-position))
      ((pair? stack-position)
-      #;(assert (eq? (cdr stack-position) 'argument))
-      (emit bco 'load-argument (car stack-position)))
+      (assert (eq? (cdr stack-position) 'argument))
+      (emit bco 'store-argument (car stack-position)))
      (else
       (error 'assert "invalid stack position" stack-position))))
 
@@ -198,8 +198,8 @@
       (body)
       (emit bco 'label label-end)))
 
-  (define (emit-apply bco function args)
-    (emit bco 'apply function args))
+  (define (emit-apply bco function)
+    (emit bco 'apply function))
 
   (define (incr-counter bco)
     (let ((old-val (counter bco)))
@@ -211,11 +211,19 @@
           (label-true (incr-counter bco))
           (label-false (incr-counter bco)))
       (condition)
-      (emit bco 'branch label-true (+ 1 stack-position))
+      (emit bco 'stack-adjust (+ 1 stack-position))
+      (emit bco 'branch label-true)
       (no)
+      (emit bco 'stack-adjust stack-position)
+      ;; Stack depth of 2 -> new stack depth of 2
+      (if (not (= (stack-depth bco) (+ 1 stack-position)))
+          (emit bco 'stack-adjust stack-position))
       (emit bco 'jump label-false)
       (emit bco 'label label-true)
       (yes)
+      ;; Stack depth of 2 -> new stack depth of 2
+      (if (not (= (stack-depth bco) (+ 1 stack-position)))
+          (emit bco 'stack-adjust stack-position))
       (emit bco 'label label-false))))
 ;;; Local Variables:
 ;;; mode: scheme

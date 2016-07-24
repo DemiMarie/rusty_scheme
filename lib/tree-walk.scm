@@ -15,7 +15,6 @@
 ;;;   are very poor.  It is much better for the checking to be done
 ;;;   by the macro expander.
 
-
 (library
     (tree-walk)
   (export
@@ -61,15 +60,16 @@
         (check-let-bindings bindings
                             "invalid \"letrec\" binding"
                             "invalid \"letrec\" bindings")
-        (compile-form
-         (let ((rest (cdr list)))
-           `((lambda ,(map cadr bindings)
-               ,@(map (lambda (bound) `(set! ,(car bound) ,(cadr bound)))
-                      bindings)
-               ,@(if (and (pair? (car rest)) (eq? (caar rest) 'define))
-                     `(((lambda () ,@rest)))
-                     rest))
-             ,@(map (lambda (_) #t) bindings))) env bco 1))
+        (let ((form-to-compile
+               (let ((rest (cdr list)))
+                 `((lambda ,(map car bindings)
+                     ,@(map (lambda (bound) `(set! ,(car bound) ,(cadr bound)))
+                            bindings)
+                     ,@(if (and (pair? (car rest)) (eq? (caar rest) 'define))
+                           `(((lambda () ,@rest)))
+                           rest))
+                   ,@(map (lambda (_) #t) bindings)))))
+          (compile-form form-to-compile env bco)))
        ((symbol? bindings) ; Attempt to write a named `letrec` form.
         ;; This is an easy error to make, so give a useful
         ;; error message.
@@ -98,6 +98,11 @@
            (check-let-bindings real-bindings
                                "invalid \"let\" binding"
                                "invalid \"let\" bindings")
+           (write `(letrec ((,bindings
+                             (lambda ,(map car real-bindings)
+                               ,@(cddr list))))
+                     (,bindings ,@(map cadr real-bindings))))
+           (newline)
            `(letrec ((,bindings
                       (lambda ,(map car real-bindings)
                         ,@(cddr list))))
@@ -278,11 +283,12 @@ allowed in expression context")
       (if (not builtin?)
           (emit-load bco function))
       (let ((real-args
-             (length (map (lambda (x)
-                            (compile-form x env bco 1)) args))))
+             (for-each
+              (lambda (x)
+                (compile-form x env bco 1)) args)))
         (if builtin?
-            (emit-primitive bco (car function) real-args)
-            (emit-apply bco function real-args)))))
+            (emit-primitive bco (car function))
+            (emit-apply bco (length args))))))
 
   (define (compile-set! form env bco)
     "Compile an assignment (`set!`)"
@@ -290,9 +296,9 @@ allowed in expression context")
              (= (length form) 2))
         (error 'syntax "Invalid set!" form))
     (or (symbol? (car form)) (syntax-violation form))
+    (compile-form (cadr form) env bco)
     (emit-set! bco
-               (lookup-environment env (car form) bco)
-               (compile-form (cadr form) env bco)))
+               (lookup-environment env (car form) bco)))
 
   ;; Compile a given form to bytecode.
   ;;

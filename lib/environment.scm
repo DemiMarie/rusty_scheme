@@ -104,7 +104,7 @@
         ;; Vector ops
         vector-set! vector-length vector-ref make-vector vector?
         ;; List ops
-        set-car! set-cdr! cons car cdr pair? cadr cddr
+        set-car! set-cdr! cons car cdr pair?
         ;; Math ops
         + - * / exp)
        (cons symbol 'primitive))
