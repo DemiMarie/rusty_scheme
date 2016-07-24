@@ -57,6 +57,9 @@ pub enum Opcode {
     /// `set-cdr!`
     SetCdr,
 
+    /// `pair?`
+    IsPair,
+
     /// Addition
     Add,
 
@@ -80,6 +83,12 @@ pub enum Opcode {
 
     /// Load from an array
     GetArray,
+
+    /// Check for vector
+    IsArray,
+
+    /// Length of vector
+    ArrayLen,
 
     /// Function call
     Call,
