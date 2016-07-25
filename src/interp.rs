@@ -422,6 +422,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 }
                 *pc += 1;
             }
+            _ => unimplemented!()
         }
     }
 }

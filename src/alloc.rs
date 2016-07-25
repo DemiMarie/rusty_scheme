@@ -5,7 +5,7 @@ use std::ptr;
 use std::slice;
 use super::value;
 use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER, SYMBOL_TAG};
-use symbol::SymbolTable;
+use symbol;
 #[cfg(debug_assertions)]
 use value::Tags;
 /// An allocator for RustyScheme objects
@@ -48,7 +48,7 @@ pub struct Heap {
     fromspace: Vec<Value>,
 
     /// The symbol table
-    pub symbol_table: SymbolTable,
+    pub symbol_table: symbol::SymbolTable,
 
     /// The environment of the current closure.
     pub environment: *mut value::Vector,
@@ -391,7 +391,7 @@ impl Heap {
     }
 
     /// FIXME use enum for tag
-    pub fn alloc_raw(&mut self, space: usize, tag: u8)
+    pub fn alloc_raw(&mut self, space: usize)
                      -> (*mut libc::c_void, usize) {
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
@@ -399,9 +399,8 @@ impl Heap {
             collect(self);
         }
         let alloced_ptr = self.tospace.as_ptr() as usize + self.tospace.len();
-        *alloced_ptr = space | tag << size_of!(usize)*8 - 3;
-        
-        ((,
+        //*alloced_ptr = space | tag << size_of!(usize)*8 - 3;
+        (alloced_ptr as *mut libc::c_void,
          align_word_size(self.tospace.len() + real_space))
     }
 
@@ -443,19 +442,24 @@ impl Heap {
         Heap {
             fromspace: Vec::with_capacity(size),
             tospace: Vec::with_capacity(size),
-            symbol_table: SymbolTable::new(),
+            symbol_table: symbol::SymbolTable::new(),
             environment: ptr::null_mut(),
             constants: ptr::null(),
             stack: Stack { innards: Vec::with_capacity(1 << 16) },
         }
     }
 
-    /// Interns a symbol
-    pub fn intern(&mut self, string: String) -> Self {
-        let (ptr, len) = self.alloc_raw(size_of!(symbol::Symbol));
-        let ptr = ptr as *const Symbol;
-        (*ptr).name = string;
-        (*ptr).value = self.stack.pop();
+    /// Interns a symbol.  TODO doesn't actually intern it.
+    pub fn intern(&mut self, string: String) {
+        unsafe {
+            let (ptr, _) = self.alloc_raw(size_of!(symbol::Symbol));
+            let value = Value::new(ptr as usize);
+            *(ptr as *mut usize) = size_of!(symbol::Symbol) | value::SYMBOL_HEADER_TAG;
+            let ptr = ptr as *mut symbol::Symbol;
+            (*ptr).name = string;
+            (*ptr).value = self.stack.pop().unwrap();
+            self.stack.push(value)
+        }
     }
 }
 
