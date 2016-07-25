@@ -10,4 +10,4 @@ run_guile () {
     guile --fresh-auto-compile -L "$LOADPATH/" "$LOADPATH/main.scm" "$@"
 }
 
-run_guile test.scm
+run_guile ~/repos/femtolisp/system.lsp

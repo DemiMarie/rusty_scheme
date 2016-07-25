@@ -47,7 +47,7 @@
       ((store-argument) (put-u8 port 31))
       ((store-global) (put-u8 port 32))))
   (define (assemble-bytecode bco)
-    (let-values (((port to-bytevector) (open-binary-output-port)))
+    (let-values (((port to-bytevector) (open-bytevector-output-port)))
       (for-each (lambda (x) (assemble-instr port x)) bco)
       (to-bytevector))))
 
