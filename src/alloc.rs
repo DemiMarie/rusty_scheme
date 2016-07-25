@@ -390,13 +390,18 @@ impl Heap {
         // debug!("Allocated a pair")
     }
 
-    pub fn alloc_raw(&mut self, space: usize) -> (*mut libc::c_void, usize) {
+    /// FIXME use enum for tag
+    pub fn alloc_raw(&mut self, space: usize, tag: u8)
+                     -> (*mut libc::c_void, usize) {
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
         if tospace_space < real_space {
             collect(self);
         }
-        ((self.tospace.as_ptr() as usize + self.tospace.len())as *mut libc::c_void,
+        let alloced_ptr = self.tospace.as_ptr() as usize + self.tospace.len();
+        *alloced_ptr = space | tag << size_of!(usize)*8 - 3;
+        
+        ((,
          align_word_size(self.tospace.len() + real_space))
     }
 
@@ -443,6 +448,14 @@ impl Heap {
             constants: ptr::null(),
             stack: Stack { innards: Vec::with_capacity(1 << 16) },
         }
+    }
+
+    /// Interns a symbol
+    pub fn intern(&mut self, string: String) -> Self {
+        let (ptr, len) = self.alloc_raw(size_of!(symbol::Symbol));
+        let ptr = ptr as *const Symbol;
+        (*ptr).name = string;
+        (*ptr).value = self.stack.pop();
     }
 }
 
