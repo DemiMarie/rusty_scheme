@@ -99,4 +99,12 @@ impl SymbolTable {
             contents: collections::HashMap::new(),
         }
     }
+/*
+    pub fn intern() -> self::Symbol {
+        let x = Symbol {
+            header: 0, // not hashed
+            body: 0,
+            
+        }
+*/
 }

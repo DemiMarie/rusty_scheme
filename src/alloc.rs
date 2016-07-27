@@ -6,6 +6,7 @@ use std::slice;
 use super::value;
 use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER, SYMBOL_TAG};
 use symbol;
+use bytecode;
 #[cfg(debug_assertions)]
 use value::Tags;
 /// An allocator for RustyScheme objects
@@ -58,6 +59,21 @@ pub struct Heap {
 
     /// The execution stack.
     pub stack: self::Stack,
+}
+
+#[repr(packed)]
+pub struct FinalizedObject {
+    /// The standard header
+    header: usize,
+
+    /// Size of user struct
+    user_struct_size: usize,
+
+    /// Link in finalized object chain
+    link: *const FinalizedObject,
+
+    /// User payload
+    payload: Drop,
 }
 
 use std::cell;
@@ -255,7 +271,12 @@ unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
                 offset += size as isize - 1;
                 continue;
             }
-            value::VECTOR_HEADER_TAG => /* Vector-like object */ {
+            value::VECTOR_HEADER_TAG => /* Vector-like object */ { }
+            value::BYTECODE_HEADER_TAG => /* Bytecode object */ {
+                let ptr: *mut bytecode::BCO = current.offset(-1) as *mut _;
+                relocate(&mut(*ptr).constants_vector, tospace, fromspace);
+                offset += size as isize - 1;
+                continue;
             }
             _ => bug!("Strange header type {:x}", tag)
         }
@@ -368,16 +389,14 @@ impl Heap {
             }
         }
         // unsafe { consistency_check(&self.tospace) }
-        self.alloc_raw(SIZEOF_PAIR);
+        self.alloc_raw(SIZEOF_PAIR, value::PAIR_HEADER_TAG);
         let len = if size_of!(usize) < 8 {
-            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER),
-                                             self.stack[car].clone(),
+            self.tospace.extend_from_slice(&[self.stack[car].clone(),
                                              self.stack[cdr].clone(),
                                              Value::new(1)]);
             self.tospace.len() - 4
         } else {
-            self.tospace.extend_from_slice(&[Value::new(PAIR_HEADER),
-                                             self.stack[car].clone(),
+            self.tospace.extend_from_slice(&[self.stack[car].clone(),
                                              self.stack[cdr].clone()]);
             self.tospace.len() - 3
         };
@@ -391,7 +410,7 @@ impl Heap {
     }
 
     /// FIXME use enum for tag
-    pub fn alloc_raw(&mut self, space: usize)
+    pub fn alloc_raw(&mut self, space: usize, tag: usize)
                      -> (*mut libc::c_void, usize) {
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
@@ -399,16 +418,15 @@ impl Heap {
             collect(self);
         }
         let alloced_ptr = self.tospace.as_ptr() as usize + self.tospace.len();
-        //*alloced_ptr = space | tag << size_of!(usize)*8 - 3;
+        self.tospace.push(Value::new(space | tag));
         (alloced_ptr as *mut libc::c_void,
          align_word_size(self.tospace.len() + real_space))
     }
 
     /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, elements: &[Value]) {
-        let (value_ptr, final_len) = self.alloc_raw(elements.len() + 1);
-        self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
-                                     (elements.len() + 2)));
+        let (value_ptr, final_len) = self.alloc_raw(elements.len() + 2,
+                                                    value::VECTOR_HEADER_TAG);
         self.tospace.push(Value::new(0));
         let ptr = value_ptr as usize | value::VECTOR_TAG;
         self.tospace.extend_from_slice(elements);
@@ -421,12 +439,10 @@ impl Heap {
         let argcount = (src as u16) << 7 | src2 as u16;
         let vararg = src & ::std::i8::MIN as u8 == 0;
         let stack_len = self.stack.len();
-        let (value_ptr, final_len) = self.alloc_raw(stack_len);
+        let (value_ptr, final_len) = self.alloc_raw(upvalues + 2, value::VECTOR_HEADER_TAG);
         let ptr = {
             let elements = &self.stack[stack_len - upvalues..stack_len];
             let ptr = value_ptr as usize | value::VECTOR_TAG;
-            self.tospace.push(Value::new(value::VECTOR_HEADER_TAG |
-                                         elements.len() + 1));
             self.tospace.push(Value::new((argcount as usize) << 2 |
                                          (-(vararg as isize) as usize &
                                           ::std::isize::MIN as usize)));
@@ -451,10 +467,11 @@ impl Heap {
 
     /// Interns a symbol.  TODO doesn't actually intern it.
     pub fn intern(&mut self, string: String) {
+        //match self.symbol_table.get(string)
         unsafe {
-            let (ptr, _) = self.alloc_raw(size_of!(symbol::Symbol));
+            let (ptr, _) = self.alloc_raw(size_of!(symbol::Symbol),
+                                          value::SYMBOL_HEADER_TAG);
             let value = Value::new(ptr as usize);
-            *(ptr as *mut usize) = size_of!(symbol::Symbol) | value::SYMBOL_HEADER_TAG;
             let ptr = ptr as *mut symbol::Symbol;
             (*ptr).name = string;
             (*ptr).value = self.stack.pop().unwrap();

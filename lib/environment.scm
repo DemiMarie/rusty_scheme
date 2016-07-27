@@ -51,7 +51,8 @@
       ;;(assert (proper-list? symbols))
       (let ((old-bindings
              (map (lambda (symbol)
-                    (hash-table-ref table symbol (lambda () '())))
+                    (hash-table-ref table symbol (lambda ()
+                                                   `((,symbol . global)))))
                   symbols)
              ))
         ;;(emit-bindings bco symbols exprs table compile-expr old-bindings)
@@ -70,16 +71,15 @@
               (bind-arguments-internal (cdr symbols) env))))
       (bind-arguments-internal symbols env)))
 
-  (define (bind-variable symbol env)
-    (let ((nth (env.depth env)))
-      (bind-symbol symbol env nth nth)))
+  (define (bind-variable symbol env nth)
+    (bind-symbol symbol env nth nth))
 
   (define (bind-symbol symbol env nth bindee)
     (let ((table (env.table env)))
       (hash-table-ref table symbol (lambda()'()))
       (hash-table-update!
        table symbol (lambda (plist) (cons bindee plist))
-       (lambda () '()))
+       (lambda () `((,symbol . global))))
       (env.set-depth! env (+ 1 nth))))
 
   (define (unbind-argument symbol env)

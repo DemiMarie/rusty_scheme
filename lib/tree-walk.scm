@@ -21,13 +21,16 @@
    compile-form
    pp-compiled-form)
   (import
-   (rnrs)
+   (rnrs base)
+   (rnrs io simple)
+   (only (rnrs eval) eval)
    (only (srfi :1) proper-list? circular-list? fold)
    (only (srfi :43) vector-copy)
    (only (srfi :69) hash-table-set! hash-table-ref)
+   (only (guile) interaction-environment)
    (environment)
    (bytecode)
-   (ice-9 pretty-print))
+   (only (ice-9 pretty-print) pretty-print))
 
 
   (define (translate-define form)
@@ -47,7 +50,7 @@
        (or (and (proper-list? binding)
                 (symbol? (car binding))
                 (= (length binding) 2))
-           (error 'syntax bad-binding-msg binding)))
+           (error 'syntax bad-binding-msg binding bindings)))
      bindings))
 
   (define (source-location form) #f)
@@ -123,7 +126,7 @@
               (let ((depth (stack-depth bco)))
                 (for-each (lambda (form symbol)
                             (compile-form form env bco)
-                            (bind-variable symbol env))
+                            (bind-variable symbol env (+ 1 (stack-depth bco))))
                           rest-of-form arglist)
                 (compile-sequence (cddr head) env bco)
                 (for-each (lambda (sym) (unbind-argument sym env)) arglist)
@@ -157,19 +160,37 @@ to immediately-invoked lambda" pair)))
           ((lambda) (compile-lambda rest-of-form env bco))
           ((define) (compile-define rest-of-form env bco))
           ((define-macro)
-           (hash-table-set! (env.macros env)
-                            (car rest-of-form)
-                            (eval
-                             (cons 'lambda (translate-define
-                                            (cdr rest-of-form)))
-                             (interaction-environment))))
+           (let ((form-to-execute
+                  (translate-define rest-of-form)))
+             (hash-table-set! (env.macros env)
+                              (car form-to-execute)
+                              (eval
+                               (cadr form-to-execute)
+                               (interaction-environment)))))
+          ((set-syntax!)
+           (or (pair? rest-of-form)
+               (error 'syntax "bad set-syntax! – must be head of list of \
+length 3" pair))
+           (let ((name (car rest-of-form))
+                 (bound (cdr rest-of-form)))
+             (if (and (symbol? name)
+                      (pair? bound)
+                      (null? (cdr bound))
+                      (pair? (car bound))
+                      (eq? (caar bound) 'lambda))
+               (hash-table-set! (env.macros env)
+                                (car rest-of-form)
+                                (eval (cadr (rest-of-form))
+                                      (interaction-environment)))
+               (error 'syntax "Bad set-syntax! form" pair))))
           ((set!) (compile-set! rest-of-form env bco))
           (else
            (let ((expander
                   (hash-table-ref (env.macros env) head
                                   (lambda () #f))))
+             (assert (or expander (not (eq? head 'cond))))
              (if expander
-                 (compile-form (expander form) env bco)
+                 (compile-form (apply expander rest-of-form) env bco)
                  (compile-function-call
                   (lookup-environment env head bco) rest-of-form env bco))))))
        (else
@@ -199,49 +220,56 @@ to immediately-invoked lambda" pair)))
         (compile-sequence (cdr form) env bco)
         (map (lambda (x) (unbind-argument x env)) symbols))))
 
+  (define (compile-internal-defines form-with-defines env bco)
+    (define (translate-internal-define rest)
+      (or (pair? rest)
+          (error 'syntax "Bad `define` form" form-with-defines))
+      (let ((defined (car rest)))
+        (if (pair? defined)
+            `(,(car defined)
+              (lambda ,(cdr defined)
+                ,@(cdr rest)))
+            (list defined rest))))
+    (let ((list-to-compile
+           (fold
+            (lambda (form rest)
+              (if (and (pair? form)
+                       (eq? (car form) 'define))
+                  ;; internal `define` form
+                  (if (null? (cdr rest))
+                      (list
+                       (cons (translate-internal-define (cdr form))
+                             (car rest)))
+                      (error 'syntax
+                             "\"define\" form \
+not allowed in expression position" form))
+                  (cons form rest)))
+            '(()) form-with-defines)))
+      (if (null? (cdr list-to-compile))
+          (error 'syntax "no expressions in sequence" form-with-defines
+                 list-to-compile)
+          (begin
+            (newline)
+            (newline)
+            (pretty-print "\n")
+            (pretty-print (reverse list-to-compile))
+            #;(flush-output-port (standard-output-port))
+            (compile-letrec (reverse list-to-compile) env bco)))))
+
   (define (compile-sequence form env bco)
     "Compile a sequence to bytecode.  Internal defines are properly handled."
     (or (proper-list? form)
         (error 'syntax "Only proper lists allowed as sequences" form))
     (and (null? form)
          (error 'syntax "Sequences must be of positive length" form))
-    (if (and (pair? (car form))
-             (eq? (caar form) 'define))
-        ;; Internal defines must be dealt with
-        (let ((seen-non-define #f))
-          (let ((list-to-compile
-                 (fold
-                  (lambda (form rest)
-                    (if (and (pair? form)
-                             (eq? (car form) 'define))
-                        ;; internal `define` form
-                        (begin
-                          (if seen-non-define
-                              (error 'syntax
-                                     "\"define\" form \
-not allowed in expression position" form))
-                          (cons
-                           (let ((rest (cdr form)))
-                             (or (pair? rest)
-                                 (error 'syntax "Bad `define` form" form))
-                             (let ((defined (car rest)))
-                               (if (pair? defined)
-                                   `(,(car defined)
-                                     (lambda ,(cdr defined)
-                                       ,@(cdr rest))))))
-                           rest))
-                        (if seen-non-define
-                            (cons form rest)
-                            (begin
-                              (set! seen-non-define #t)
-                              (cons form '())))))
-                  '()
-                  form)))
-            (or seen-non-define
-                (error 'syntax "no expressions in sequence" form))
-            (compile-letrec (reverse list-to-compile) env bco)))
-        (for-each (lambda (form) (compile-form form env bco 1)) form)))
-
+    (let ((depth (stack-depth bco)))
+      (if (and (pair? (car form))
+               (eq? (caar form) 'define))
+          (compile-internal-defines form env bco)
+          (begin
+            (for-each
+             (lambda (form) (compile-form form env bco 1)) form)
+            (emit-stack-adjust bco depth)))))
   (define (compile-if pair env bco)
     "Compile a Scheme `if` expression to Scheme bytecode"
     (let ((length-of-pair (length pair)))
@@ -281,15 +309,26 @@ allowed in expression context")
           (and (pair? function)
                (eq? (cdr function) 'primitive))))
       (if (not builtin?)
-          (emit-load bco function))
-      (let ((real-args
-             (for-each
-              (lambda (x)
-                (compile-form x env bco 1)) args)))
-        (if builtin?
-            (emit-primitive bco (car function))
-            (emit-apply bco (length args))))))
-
+          (begin
+            (emit-load bco function)
+            (for-each
+             (lambda (x)
+               (compile-form x env bco 1)) args)
+            (emit-apply bco (length args)))
+          (begin
+            (let ((params
+                   (map (lambda (arg)
+                          (let ((val (and (symbol? arg)
+                                          (lookup-environment env arg bco))))
+                            (if (integer? val)
+                                val
+                                (begin
+                                  (display "compiling argument: ")
+                                  (write arg)
+                                  (newline)
+                                  (compile-form arg env bco)))))
+                        args)))
+              (apply emit bco (car function) params))))))
   (define (compile-set! form env bco)
     "Compile an assignment (`set!`)"
     (or (and (proper-list? form)
@@ -314,7 +353,7 @@ allowed in expression context")
              (compile-pair form env bco))
             ((symbol? form) ; Symbol = variable reference
              (emit-load bco (lookup-environment env form bco)))
-            ((eq? form '())
+            #;((eq? form '())
              (error
               'syntax
               "() is not legal Scheme – did you mean '()?" form))

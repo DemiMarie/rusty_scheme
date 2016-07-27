@@ -15,6 +15,7 @@
           bco.consts-len
           stack-depth
           create-bco
+          emit-stack-adjust
           emit-jump
           emit-set!
           emit-toplevel-set!
@@ -116,7 +117,7 @@
     (if (pair? arg)
         (case (cdr arg)
           ((argument) (emit bco 'load-argument (car arg)))
-          ((global) (emit bco 'load-global (car arg)))
+          ((global primitive) (emit bco 'load-global (car arg)))
           ((()) (emit bco 'load-environment (car arg)))
           (else (error 'assert "bad cdr of arg to be loaded" arg)))
         (emit bco 'load-environment arg)))
@@ -184,8 +185,12 @@
      ((fixnum? stack-position)
       (emit bco 'store-environment stack-position))
      ((pair? stack-position)
-      (assert (eq? (cdr stack-position) 'argument))
-      (emit bco 'store-argument (car stack-position)))
+      (case (cdr stack-position)
+        ((argument)
+         (emit bco 'store-argument (car stack-position)))
+        ((global)
+         (emit bco 'store-global (car stack-position)))
+        (else (assert #f))))
      (else
       (error 'assert "invalid stack position" stack-position))))
 
@@ -201,29 +206,30 @@
   (define (emit-apply bco function)
     (emit bco 'apply function))
 
+  (define (emit-stack-adjust bco new-depth)
+    (if (not (= (stack-depth bco) new-depth))
+        (begin
+          (emit bco 'stack-adjust new-depth)
+          (stack-depth-set! bco new-depth))))
+
   (define (incr-counter bco)
     (let ((old-val (counter bco)))
       (counter-set! bco (+ 1 old-val))
       old-val))
   ;; Emit a jump.
   (define (emit-jump bco condition yes no)
-    (let ((stack-position (stack-depth bco))
+    (let ((stack-position (+ 1 (stack-depth bco)))
           (label-true (incr-counter bco))
           (label-false (incr-counter bco)))
       (condition)
-      (emit bco 'stack-adjust (+ 1 stack-position))
+      (emit-stack-adjust bco stack-position)
       (emit bco 'branch label-true)
       (no)
-      (emit bco 'stack-adjust stack-position)
-      ;; Stack depth of 2 -> new stack depth of 2
-      (if (not (= (stack-depth bco) (+ 1 stack-position)))
-          (emit bco 'stack-adjust stack-position))
+      (emit-stack-adjust bco stack-position)
       (emit bco 'jump label-false)
       (emit bco 'label label-true)
       (yes)
-      ;; Stack depth of 2 -> new stack depth of 2
-      (if (not (= (stack-depth bco) (+ 1 stack-position)))
-          (emit bco 'stack-adjust stack-position))
+      (emit-stack-adjust bco stack-position)
       (emit bco 'label label-false))))
 ;;; Local Variables:
 ;;; mode: scheme

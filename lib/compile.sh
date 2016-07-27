@@ -8,6 +8,7 @@ esac
 
 run_guile () {
     guile --fresh-auto-compile -L "$LOADPATH/" "$LOADPATH/main.scm" "$@"
+    #ikarus --r6rs-script main.scm
 }
 
 run_guile ~/repos/femtolisp/system.lsp

@@ -28,6 +28,7 @@ macro_rules! bug {
 mod value;
 mod state;
 mod arith;
+mod bytecode;
 mod alloc;
 mod symbol;
 mod interp;

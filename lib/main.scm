@@ -8,6 +8,10 @@
    (assembler)
    (ice-9 pretty-print))
 
+(define (bound? sym) (symbol-bound? #f sym))
+(define aset! vector-set!)
+(define aref vector-ref)
+(define (atom? obj) (not (pair? obj)))
 
 (define (main args)
   (with-input-from-file (cadr args)
@@ -32,11 +36,9 @@
                                       0
                                       (bco.consts-len just-compiled)
                                       #f)))
-                    (pretty-print
+                    #;(pretty-print
                      (assemble-bytecode
                       (vector->list instrs)))
-                    (let ((new-tail (list just-compiled)))
-                      (set-cdr! last-compiled-head new-tail)
-                      (cont env bco just-compiled)))))))))))
+                      (cont env bco (list just-compiled)))))))))))
 
 (pretty-print (main (command-line)))

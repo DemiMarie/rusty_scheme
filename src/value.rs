@@ -343,6 +343,9 @@ pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
 /// The header tag of a pair.
 pub const PAIR_HEADER_TAG: usize = 0b11 << (self::SIZEOF_PTR * 8 - 2);
 
+/// The header tag of a function.
+pub const BYTECODE_HEADER_TAG: usize = 0b011 << (self::SIZEOF_PTR * 8 - 3);
+
 /// The header of a pair.
 pub const PAIR_HEADER: usize = PAIR_HEADER_TAG | SIZEOF_PAIR;
 
