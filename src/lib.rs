@@ -34,8 +34,8 @@ mod symbol;
 mod interp;
 //mod read;
 mod api;
-pub use interp::Opcode;
 pub use api::*;
+pub use bytecode::{Opcode, BCO};
 #[cfg(test)]
 mod tests {
     #[test]

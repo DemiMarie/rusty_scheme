@@ -34,116 +34,18 @@
 
 use std::ptr;
 use value;
-use std::mem;
 use alloc;
 use arith;
 
+use bytecode::{Bytecode, Opcode};
+
 const STACK_OFFSET: usize = 1;
-
-#[repr(u8)]
-pub enum Opcode {
-    /// `cons`
-    Cons,
-
-    /// `car`
-    Car,
-
-    /// `cdr`
-    Cdr,
-
-    /// `set-car!`
-    SetCar,
-
-    /// `set-cdr!`
-    SetCdr,
-
-    /// `pair?`
-    IsPair,
-
-    /// Addition
-    Add,
-
-    /// Subtraction
-    Subtract,
-
-    /// Multiplication
-    Multiply,
-
-    /// Division
-    Divide,
-
-    /// Exponentiation
-    Power,
-
-    /// Create an array
-    MakeArray,
-
-    /// Store to an array
-    SetArray,
-
-    /// Load from an array
-    GetArray,
-
-    /// Check for vector
-    IsArray,
-
-    /// Length of vector
-    ArrayLen,
-
-    /// Function call
-    Call,
-
-    /// Tail call
-    TailCall,
-
-    /// Return from a function
-    Return,
-
-    /// Create a closure
-    Closure,
-
-    /// Mutation of stack slots
-    Set,
-
-    /// Load from constant vector
-    LoadConstant,
-
-    /// Load from environment
-    LoadEnvironment,
-
-    /// Load from argument
-    LoadArgument,
-
-    /// Load from global
-    LoadGlobal,
-
-    /// Load `#f`
-    LoadFalse,
-
-    /// Load `#t`
-    LoadTrue,
-
-    /// Load the empty list
-    LoadNil,
-
-    /// Store to environment
-    StoreEnvironment,
-
-    /// Store to argument
-    StoreArgument,
-
-    /// Store to global
-    StoreGlobal,
-}
-
 
 pub struct ActivationRecord {
     return_address: usize,
     frame_pointer: usize,
     captured: bool,
 }
-
-use value::Instruction;
 
 /// The Scheme state.  It has several parts:
 ///
@@ -160,9 +62,8 @@ pub struct State {
     program_counter: usize,
     sp: usize,
     control_stack: Vec<ActivationRecord>,
-    // registers: Vec<Instruction>,
+    bytecode: Vec<Bytecode>,
     pub heap: alloc::Heap,
-    bytecode: Vec<Instruction>,
 }
 
 /// Create a new Scheme interpreter
@@ -185,15 +86,8 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
     let sp = &mut s.sp;
     let mut fp = 0;
     'main: loop {
-        let Instruction { opcode, src, src2, dst } = s.bytecode[*pc];
+        let Bytecode { opcode, src, src2, dst } = s.bytecode[*pc];
         let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
-        let opcode = unsafe {
-            if opcode <= mem::transmute(Opcode::StoreGlobal) {
-                mem::transmute(opcode)
-            } else {
-                unreachable!()
-            }
-        };
         // let len = heap.stack.len();
         match opcode {
             Opcode::Cons => {
@@ -202,37 +96,35 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 *pc += 1;
             }
             Opcode::Car => {
-                heap.stack[dst] =
-                    try!(heap.stack[src]
-                         .car()
-                         .map_err(|()|
-                                  "Attempt to take the car of a \
-                                   non-pair".to_owned()));
+                heap.stack[dst] = try!(heap.stack[src]
+                                           .car()
+                                           .map_err(|()| {
+                                               "Attempt to take the \
+                                                car of a non-pair"
+                                                   .to_owned()
+                                           }));
                 *pc += 1;
             }
             Opcode::Cdr => {
-                heap.stack[dst] =
-                    try!(heap.stack[src]
-                         .cdr()
-                         .map_err(|()|
-                                  "Attempt to take the cdr of a \
-                                   non-pair".to_owned()));
+                heap.stack[dst] = try!(heap.stack[src]
+                                           .cdr()
+                                           .map_err(|()| {
+                                               "Attempt to take the \
+                                                cdr of a non-pair"
+                                                   .to_owned()
+                                           }));
                 *pc += 1;
             }
             Opcode::SetCar => {
                 try!(heap.stack[dst]
-                     .set_car(heap.stack[src].clone())
-                     .map_err(|()|
-                              "Attempt to set the car of a \
-                               non-pair".to_owned()));
+                         .set_car(heap.stack[src].clone())
+                         .map_err(|()| "Attempt to set the car of a non-pair".to_owned()));
                 *pc += 1;
             }
             Opcode::SetCdr => {
                 try!(heap.stack[dst]
-                     .set_cdr(heap.stack[src].clone())
-                     .map_err(|()|
-                              "Attempt to set the cdr of a \
-                               non-pair".to_owned()));
+                         .set_cdr(heap.stack[src].clone())
+                         .map_err(|()| "Attempt to set the cdr of a non-pair".to_owned()));
                 *pc += 1;
             }
             Opcode::Set => {
@@ -253,7 +145,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                         value::Value::new(res)
                     }
                 } else {
-                    return Err("wrong type to add".to_owned())
+                    return Err("wrong type to add".to_owned());
                 });
                 *pc += 1;
             }
@@ -261,8 +153,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             Opcode::Subtract => {
                 let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
                 // See above.
-                heap.stack[dst] =
-                    try!(arith::subtract(heap, &fst, &snd));
+                heap.stack[dst] = try!(arith::subtract(heap, &fst, &snd));
                 *pc += 1;
             }
 
@@ -290,30 +181,26 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             Opcode::Closure => {
                 heap.alloc_closure(src as u8, src2 as u8, dst);
                 let len = heap.stack.len();
-                heap.environment = unsafe { heap.stack[len - 1].as_ptr() }
-                                                      as *mut value::Vector;
+                heap.environment = unsafe { heap.stack[len - 1].as_ptr() } as *mut value::Vector;
                 *pc += 1;
             }
 
             Opcode::MakeArray => {
-                let _value = alloc::Heap::alloc_vector(heap, &[]);
+                let _value = alloc::Heap::alloc_vector(heap, src, src2);
                 *pc += 1;
             }
 
             Opcode::SetArray => {
-                let index = try!(heap.stack[src]
-                                 .as_fixnum());
-                try!(heap.stack[dst]
-                     .array_set(index, &heap.stack[src2]));
+                let index = try!(heap.stack[src].as_fixnum());
+                try!(heap.stack[dst].array_set(index, &heap.stack[src2]));
                 *pc += 1;
             }
 
             Opcode::GetArray => {
-                let index = try!(heap.stack[src]
-                                 .as_fixnum());
+                let index = try!(heap.stack[src].as_fixnum());
                 heap.stack[dst] = try!(heap.stack[src2]
-                                       .array_get(index)
-                                       .map(|ptr| unsafe { (*ptr).clone() }));
+                                           .array_get(index)
+                                           .map(|ptr| unsafe { (*ptr).clone() }));
                 *pc += 1;
             }
 
@@ -338,8 +225,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 heap.stack.push(value::Value::new(value::TRUE));
             }
 
-            Opcode::LoadNil =>
-                heap.stack.push(value::Value::new(value::NIL)),
+            Opcode::LoadNil => heap.stack.push(value::Value::new(value::NIL)),
             Opcode::TailCall => {
                 let (first, rest) = heap.stack.split_at_mut(*sp - src - 1);
                 *pc = 0;
@@ -353,43 +239,39 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                     *pc = return_frame.return_address;
                     fp = return_frame.frame_pointer
                 } else {
-                    return Ok(())
+                    return Ok(());
                 }
             }
 
             Opcode::LoadEnvironment => {
-                let to_be_pushed =
-                    (if heap.environment.is_null() {
-                        &heap.stack[src]
-                    } else {
-                        unsafe {
-                            &*value::Value::raw_array_get(heap.environment as *const _, src)
-                                .unwrap()
-                        }
-                    })
-                    .clone();
+                let to_be_pushed = if heap.environment.is_null() {
+                    heap.stack[src + fp].clone()
+                } else {
+                    unsafe {
+                        (*value::Value::raw_array_get(heap.environment as *const _, src).unwrap()).clone()
+                    }
+                };
                 heap.stack.push(to_be_pushed.clone());
                 *pc += 1;
             }
 
             Opcode::LoadConstant => {
                 let x = unsafe {
-                    (*value::Value::raw_array_get(heap.constants,
-                                                  src).unwrap()).clone()
+                    (*value::Value::raw_array_get(heap.constants, src).unwrap()).clone()
                 };
                 heap.stack.push(x);
                 *pc += 1;
             }
 
             Opcode::LoadArgument => {
-                let x = heap.stack[fp + 1 + src].clone();
+                let x = heap.stack[fp + src].clone();
                 heap.stack.push(x);
                 *pc += 1;
             }
 
             Opcode::StoreArgument => {
                 let x = heap.stack.pop().unwrap();
-                heap.stack[fp + 1 + src] = x;
+                heap.stack[fp + src] = x;
                 *pc += 1;
             }
 
@@ -406,47 +288,46 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             }
 
             Opcode::LoadGlobal => {
-                match heap.stack.pop().map(|x|x.kind()) {
-                    Some(Kind::Symbol(ptr)) =>
-                        heap.stack.push((unsafe { &*ptr }).value.clone()),
+                match heap.stack.pop().map(|x| x.kind()) {
+                    Some(Kind::Symbol(ptr)) => heap.stack.push((unsafe { &*ptr }).value.clone()),
                     _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
                 }
                 *pc += 1;
             }
 
             Opcode::StoreGlobal => {
-                match heap.stack.pop().map(|x|x.kind()) {
-                    Some(Kind::Symbol(ptr)) =>
-                        (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap(),
+                match heap.stack.pop().map(|x| x.kind()) {
+                    Some(Kind::Symbol(ptr)) => {
+                        (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap()
+                    }
                     _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
                 }
                 *pc += 1;
             }
-            _ => unimplemented!()
+            _ => unimplemented!(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use value::{Value, Instruction};
+    use value::Value;
     use std::cell::Cell;
-    use std::mem;
-    use super::*;
+    use bytecode::{Opcode, Bytecode};
     #[test]
     fn can_cons() {
         let mut bco = super::new();
         bco.heap.stack.push(Value { contents: Cell::new(0) });
         bco.heap.stack.push(Value { contents: Cell::new(0) });
         assert!(bco.heap.stack.len() == 2);
-        bco.bytecode.push(Instruction {
-            opcode: 0,
+        bco.bytecode.push(Bytecode {
+            opcode: Opcode::Cons,
             src: 0,
             src2: 1,
             dst: 1,
         });
-        bco.bytecode.push(Instruction {
-            opcode: unsafe { mem::transmute(Opcode::Return) },
+        bco.bytecode.push(Bytecode {
+            opcode: Opcode::Return,
             src: 0,
             src2: 0,
             dst: 0,
