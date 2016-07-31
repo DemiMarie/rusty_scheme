@@ -21,10 +21,24 @@ use symbol;
 /// Scheme values are garbage collected, so must never appear outside
 /// the heap, stack, or handles.  The GC will invalidate any other `Value`,
 /// creating a dangling pointer.
-#[repr(C)]
+#[repr(packed)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Value {
     pub contents: Cell<usize>,
+}
+
+/// The basic structure of an arbitrary Scheme heap object.
+#[repr(packed)]
+pub struct SchemeObject<T: ?Sized> {
+    header: usize,
+    body: T,
+}
+
+/// The basic finalized Scheme object
+#[repr(packed)]
+pub struct FinalizedHeader {
+    header: usize,
+    next_object: *mut FinalizedHeader,
 }
 
 /// A Scheme "vector-like thing".

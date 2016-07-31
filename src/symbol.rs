@@ -1,4 +1,5 @@
 use value;
+use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};
 use std::collections;
 use std::cmp::{PartialEq, Eq};
@@ -14,7 +15,7 @@ use std::ptr;
 #[derive(Debug)]
 pub struct Symbol {
     /// Header for the GC
-    header: usize,
+    pub header: usize,
 
     /// Value (the value of the symbol)
     pub value: value::Value,
@@ -25,11 +26,16 @@ pub struct Symbol {
 
 // Invariant: always points to a valid `str`
 #[derive(Clone)]
-struct Key(Cell<*mut Symbol>);
+pub struct Key(pub Cell<*mut Symbol>);
 use std::fmt;
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Key(Cell(@{:p}))", self.0.get())
+    }
+}
+impl Key {
+    pub fn get(&self) -> *mut Symbol {
+        self.0.get()
     }
 }
 
@@ -64,8 +70,10 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
+    pub fn entry(&mut self, other: Key) -> Entry<Key, ()> {
+        self.contents.entry(other)
+    }
     pub fn fixup(&mut self) {
-        use std::collections::hash_map::Entry;
         let mut vec = vec![];
         for (i, &()) in self.contents.iter() {
             let ptr = i.0.get();
@@ -99,12 +107,4 @@ impl SymbolTable {
             contents: collections::HashMap::new(),
         }
     }
-/*
-    pub fn intern() -> self::Symbol {
-        let x = Symbol {
-            header: 0, // not hashed
-            body: 0,
-            
-        }
-*/
 }

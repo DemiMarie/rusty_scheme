@@ -30,8 +30,12 @@
 use interp;
 use value;
 use alloc;
-
-pub struct State(interp::State);
+use arith;
+use value::Kind;
+pub struct State {
+    state: interp::State,
+    fp: usize,
+}
 
 
 // Unsafe because the return value is not rooted
@@ -49,26 +53,27 @@ unsafe impl SchemeValue for usize {
         }
     }
     fn of_value(val: &value::Value) -> Result<Self, String> {
-        val.as_fixnum().map_err(|x|x.to_owned())
+        val.as_fixnum().map_err(|x| x.to_owned())
     }
 }
 
 impl State {
     pub fn new() -> Self {
-        State(interp::new())
+        State { state: interp::new(), fp: (- 1isize) as usize }
     }
 
     pub fn execute_bytecode(&mut self) -> Result<(), String> {
-        interp::interpret_bytecode(&mut self.0)
+        interp::interpret_bytecode(&mut self.state)
     }
 
-    pub fn push<T: SchemeValue>(&mut self, value: T) -> Result<(),()> {
-        let new_val = value.to_value(&mut self.0.heap);
-        Ok(self.0.heap.stack.push(new_val))
+    pub fn push<T: SchemeValue>(&mut self, value: T) -> Result<(), ()> {
+        let state = &mut self.state;
+        let new_val = value.to_value(&mut state.heap);
+        Ok(state.heap.stack.push(new_val))
     }
 
     pub fn pop<T: SchemeValue>(&mut self) -> Result<T, String> {
-        let x = self.0.heap.stack.pop();
+        let x = self.state.heap.stack.pop();
         match x {
             Some(v) => T::of_value(&v),
             None => Err("Attempt to pop from empty stack".to_owned()),
@@ -76,142 +81,140 @@ impl State {
     }
 
     pub fn cons(&mut self) -> Result<(), String> {
-        let len = self.0.heap.stack.len();
-        Ok(self.0.heap.alloc_pair(len - 2, len - 1))
+        let len = self.state.heap.stack.len();
+        Ok(self.state.heap.alloc_pair(len - 2, len - 1))
     }
 
     pub fn car(&mut self) -> Result<value::Value, String> {
-        let len = self.0.heap.stack.len();
-        self.0.heap.stack[len - 1]
+        let len = self.state.heap.stack.len();
+        self.state.heap.stack[len - 1]
             .car()
-            .map_err(|()|
-                     "Attempt to take the car of a \
-                      non-pair".to_owned())
+            .map_err(|()| "Attempt to take the car of a non-pair".to_owned())
     }
-    pub fn cdr(&mut self) -> Result<value::Value, String> {
-        let len = self.0.heap.stack.len();
-        self.0.heap.stack[len - 1]
-            .cdr()
-            .map_err(|()|
-                     "Attempt to take the cdr of a \
-                      non-pair".to_owned())
+    pub fn cdr(&mut self) -> Result<(), String> {
+        let len = self.state.heap.stack.len();
+        let new_val = try!(self.state.heap.stack[len - 1]
+                               .cdr()
+                               .map_err(|()| "Attempt to take the cdr of a non-pair".to_owned()));
+        Ok(self.state.heap.stack[len - 1] = new_val)
     }
     pub fn intern(_object: &str) -> Result<(), String> {
         unimplemented!()
     }
-}
-/*
-Opcode::SetCdr => {
-    try!(heap.stack[dst]
-         .set_cdr(heap.stack[src].clone())
-         .map_err(|()|
-                  "Attempt to set the cdr of a \
-                   non-pair".to_owned()));
-    *pc += 1;
-}
-Opcode::Set => {
-    heap.stack[dst] = heap.stack[src].clone();
-    *pc += 1;
-}
-Opcode::Add => {
-    // The hot paths are fixnums and flonums.  They are inlined.
-    // Most scripts probably do not heavily use complex numbers.
-    // Bignums or rationals will always be slow.
-    let (fst, snd) = (heap.stack[src].get(), heap.stack[src2].get());
-    heap.stack.push(if fst & snd & 3 == 0 {
-        let res = fst.wrapping_add(snd);
-        if res < fst {
-            // Overflow
-            value::Value::new(res) // TODO: implement bignums
+
+    pub fn set(&mut self, src: usize, dst: usize) -> () {
+        let heap = &mut self.state.heap;
+        let fp = self.fp;
+        heap.stack[dst - fp] = heap.stack[src - fp].clone();
+    }
+    pub fn add(&mut self, src: usize, src2: usize) -> Result<(), ()> {
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        // The hot paths are fixnums and flonums.  They are inlined.
+        // Most scripts probably do not heavily use complex numbers.
+        // Bignums or rationals will always be slow.
+        let (fst, snd) = (heap.stack[src - fp].get(), heap.stack[src2 - fp].get());
+        heap.stack.push(if fst & snd & 3 == 0 {
+            let res = fst.wrapping_add(snd);
+            if res < fst {
+                // Overflow
+                value::Value::new(res) // TODO: implement bignums
+            } else {
+                value::Value::new(res)
+            }
         } else {
-            value::Value::new(res)
+            return Err(());
+        });
+        Ok(())
+    }
+
+    pub fn subtract(&mut self, src: usize, src2: usize) -> Result<(), String> {
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        let (fst, snd) = (heap.stack[src - fp].clone(), heap.stack[src2 - fp].clone());
+        // See above.
+        let to_be_pushed = try!(arith::subtract(heap, &fst, &snd));
+        Ok(heap.stack.push(to_be_pushed))
+    }
+
+    pub fn multiply(&mut self, src: usize, src2: usize) -> Result<(), String> {
+        // See above.
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        let (fst, snd) = (heap.stack[src - fp].clone(), heap.stack[src2 - fp].clone());
+        arith::multiply(heap, &fst, &snd).map(|_|())
+    }
+
+    pub fn divide(&mut self, src: usize, src2: usize, dst: usize) -> Result<(), String> {
+        // See above.
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        let (fst, snd) = (heap.stack[src - fp].clone(), heap.stack[src2 - fp].clone());
+        heap.stack[dst - fp] = try!(arith::divide(heap, &fst, &snd));
+        Ok(())
+    }
+
+    pub fn exponential(&mut self, src: usize, src2: usize,
+                       _dst: usize) -> Result<(), String> {
+        // See above.
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        let (fst, snd) = (heap.stack[src - fp].clone(), heap.stack[src2 - fp].clone());
+        heap.stack[_dst - fp] = arith::exponential(fst, snd);
+    }
+
+    pub fn vector(&mut self, src: usize, src2: usize) -> Result<(), String> {
+        let heap = &mut self.state.heap;
+        let _value = alloc::Heap::alloc_vector(heap, src, src2);
+        Ok(())
+    }
+
+    pub fn array_set(&mut self, index: usize, src: usize, dst: usize) -> Result<(), String> {
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        heap.stack[dst - fp].array_set(index, &heap.stack[src])
+    }
+
+    pub fn array_get(&mut self, index: usize, src: usize, dst: usize) -> Result<(), String> {
+        let fp = self.fp;
+        let heap = &mut self.state.heap;
+        heap.stack[dst + fp] = try!(heap.stack[src + fp]
+                                        .array_get(index)
+                                        .map(|ptr| unsafe { (*ptr).clone() }));
+        Ok(())
+    }
+
+    pub fn push_false(&mut self) {
+        self.state.heap.stack.push(value::Value::new(value::FALSE));
+    }
+
+    pub fn push_true(&mut self) {
+        let heap = &mut self.state.heap;
+        heap.stack.push(value::Value::new(value::TRUE));
+    }
+
+    pub fn push_nil(&mut self) {
+        let heap = &mut self.state.heap;
+        heap.stack.push(value::Value::new(value::NIL))
+    }
+
+    pub fn load_global(&mut self) -> Result<(), String> {
+        let heap = &mut self.state.heap;
+        match heap.stack.pop().map(|x| x.kind()) {
+            Some(Kind::Symbol(ptr)) => Ok(heap.stack.push((unsafe { &*ptr }).value.clone())),
+            _ => Err("Attempt to get the value of a non-symbol".to_owned()),
         }
-    } else {
-        return Err("wrong type to add".to_owned())
-    });
-    *pc += 1;
-}
-
-Opcode::Subtract => {
-    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-    // See above.
-    heap.stack[dst] =
-        try!(arith::subtract(heap, &fst, &snd));
-    *pc += 1;
-}
-
-Opcode::Multiply => {
-    // See above.
-    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-    heap.stack[dst] = try!(arith::multiply(heap, &fst, &snd));
-    *pc += 1;
-}
-
-Opcode::Divide => {
-    // See above.
-    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-    heap.stack[dst] = try!(arith::divide(heap, &fst, &snd));
-    *pc += 1;
-}
-
-Opcode::Power => {
-    // See above.
-    let (fst, snd) = (heap.stack[src].clone(), heap.stack[src2].clone());
-    heap.stack[dst] = arith::exponential(fst, snd);
-    *pc += 1;
-}
-
-Opcode::MakeArray => {
-    let _value = alloc::Heap::alloc_vector(heap, &[]);
-    *pc += 1;
-}
-
-Opcode::SetArray => {
-    let index = try!(heap.stack[src]
-                     .as_fixnum());
-    try!(heap.stack[dst]
-         .array_set(index, &heap.stack[src2]));
-    *pc += 1;
-}
-
-Opcode::GetArray => {
-    let index = try!(heap.stack[src]
-                     .as_fixnum());
-    heap.stack[dst] = try!(heap.stack[src2]
-                           .array_get(index)
-                           .map(|ptr| unsafe { (*ptr).clone() }));
-    *pc += 1;
-}
-
-Opcode::LoadFalse => {
-    heap.stack.push(value::Value::new(value::FALSE));
-}
-
-Opcode::LoadTrue => {
-    heap.stack.push(value::Value::new(value::TRUE));
-}
-
-Opcode::LoadNil =>
-    heap.stack.push(value::Value::new(value::NIL)),
-
-Opcode::LoadGlobal => {
-    match heap.stack.pop().map(|x|x.kind()) {
-        Some(Kind::Symbol(ptr)) =>
-            heap.stack.push((unsafe { &*ptr }).value.clone()),
-        _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
     }
-    *pc += 1;
-}
 
-Opcode::StoreGlobal => {
-    match heap.stack.pop().map(|x|x.kind()) {
-        Some(Kind::Symbol(ptr)) =>
-            (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap(),
-        _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+    pub fn store_global(&mut self) -> Result<(), String> {
+        let heap = &mut self.state.heap;
+        match heap.stack.pop().map(|x| x.kind()) {
+            Some(Kind::Symbol(ptr)) =>
+                Ok((unsafe { &mut *ptr }).value = heap.stack.pop().unwrap()),
+            _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
+        }
     }
-    *pc += 1;
 }
-*/
 
 #[cfg(test)]
 mod tests {
