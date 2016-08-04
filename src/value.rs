@@ -1,4 +1,4 @@
-//! The representation of Scheme values in RustyScheme.
+//! The representation of Scheme values in `RustyScheme`.
 //!
 //! Inspired by the representation of Femtolisp.
 //!
@@ -123,7 +123,7 @@ pub struct Instruction {
 pub const FALSE: usize = 0x3;
 
 /// The Scheme immediate `#t`
-pub const TRUE: usize = 0xB ;
+pub const TRUE: usize = 0xB;
 
 /// The Scheme empty list `()`
 pub const NIL: usize = 0x13;
@@ -176,7 +176,9 @@ impl Value {
     /// The heap size of `self`, not including `self`.  Returns `None` for
     /// immediate objects.
     pub fn size(&self) -> Option<usize> {
-        if self.immediatep() {
+        if self.tag() == Tags::Symbol {
+            Some(0)
+        } else if self.immediatep() {
             None
         } else {
             Some(unsafe { *((self.contents.get() & !0b111) as *const usize) & !HEADER_TAG })
@@ -270,14 +272,10 @@ impl Value {
 
     pub fn kind(&self) -> Kind {
         match self.tag() {
-            Tags::Pair =>
-                Kind::Pair(unsafe { self.as_ptr() } as *mut Pair),
-            Tags::Vector =>
-                Kind::Vector(unsafe { self.as_ptr() } as *mut Vector),
-            Tags::Num | Tags::Num2 =>
-                Kind::Fixnum(self.contents.get() >> 2),
-            Tags::Symbol =>
-                Kind::Symbol(unsafe { self.as_ptr() } as *mut symbol::Symbol),
+            Tags::Pair => Kind::Pair(unsafe { self.as_ptr() } as *mut Pair),
+            Tags::Vector => Kind::Vector(unsafe { self.as_ptr() } as *mut Vector),
+            Tags::Num | Tags::Num2 => Kind::Fixnum(self.contents.get() >> 2),
+            Tags::Symbol => Kind::Symbol(unsafe { self.as_ptr() } as *mut symbol::Symbol),
             _ => unimplemented!(),
         }
     }
@@ -330,7 +328,7 @@ pub const VECTOR_TAG: usize = 0b011;
 /// end-of-file object, the undefined value, and characters.
 pub const NUM_TAG_2: usize = 0b100;
 
-/// The tag of RustData – Rust values stored on the Scheme heap.
+/// The tag of `RustData` – Rust values stored on the Scheme heap.
 pub const RUST_DATA_TAG: usize = 0b101;
 
 /// The tag of Symbols.
@@ -339,8 +337,8 @@ pub const SYMBOL_TAG: usize = 0b110;
 /// The tag of Pairs
 pub const PAIR_TAG: usize = 0b111;
 
-// #[cfg(target_pointer_width = "16")]
-// pub const SIZEOF_PTR: usize = 2;
+#[cfg(target_pointer_width = "16")]
+pub const SIZEOF_PTR: usize = 2;
 
 #[cfg(target_pointer_width = "32")]
 pub const SIZEOF_PTR: usize = 4;
@@ -348,29 +346,33 @@ pub const SIZEOF_PTR: usize = 4;
 #[cfg(target_pointer_width = "64")]
 pub const SIZEOF_PTR: usize = 8;
 
+#[cfg(target_pointer_width = "128")]
+pub const SIZEOF_PTR: usize = 16;
+
 /// The amount of memory occupied by a pair.
 pub const SIZEOF_PAIR: usize = (3 * self::SIZEOF_PTR + 0b111) >> 3;
 
 /// Bitmask that includes the tag words of an object header.
 pub const HEADER_TAG: usize = 0b111 << (self::SIZEOF_PTR * 8 - 3);
 
-/// The header tag of a pair.
-pub const PAIR_HEADER_TAG: usize = 0b11 << (self::SIZEOF_PTR * 8 - 2);
-
-/// The header tag of a function.
-pub const BYTECODE_HEADER_TAG: usize = 0b011 << (self::SIZEOF_PTR * 8 - 3);
-
 /// The header of a pair.
-pub const PAIR_HEADER: usize = PAIR_HEADER_TAG | SIZEOF_PAIR;
+pub const PAIR_HEADER: usize = HeaderTag::Pair as usize + SIZEOF_PAIR;
 
-/// The header of a symbol.
-pub const SYMBOL_HEADER_TAG: usize = 0b101 << (self::SIZEOF_PTR * 8 - 3);
+#[cfg_attr(feature = "clippy", allow(enum_clike_unportable_variant))]
+#[repr(usize)]
+pub enum HeaderTag {
+    /// The header tag of a pair.
+    Pair = 0b11 << (self::SIZEOF_PTR * 8 - 2),
 
-/// The header of a `RustData`.
-pub const RUSTDATA_HEADER_TAG: usize = 0b100 << (self::SIZEOF_PTR * 8 - 3);
+    /// The header tag of a function.
+    Bytecode = 0b011 << (self::SIZEOF_PTR * 8 - 3),
 
-/// The header of a vector.
-pub const VECTOR_HEADER_TAG: usize = 0;
+    /// The header of a `RustData`.
+    RustData = 0b100 << (self::SIZEOF_PTR * 8 - 3),
+
+    /// The header of a vector.
+    Vector = 0,
+}
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum Tags {
@@ -386,12 +388,10 @@ pub enum Tags {
 
 
 impl Value {
-    #[inline(always)]
     pub fn raw_tag(&self) -> usize {
         self.get() & 0b111
     }
 
-    #[inline(always)]
     pub fn tag(&self) -> Tags {
         use self::Tags::*;
         match self.raw_tag() {
@@ -406,23 +406,23 @@ impl Value {
             _ => unreachable!(),
         }
     }
-    #[inline(always)]
+    // #[inline(always)]
     pub fn leafp(&self) -> bool {
         self.raw_tag() & 0b10 == 0
     }
-    #[inline(always)]
+    // #[inline(always)]
     pub fn both_fixnums(&self, other: &Self) -> bool {
         (self.get() | other.get()) & 0b11 == 0
     }
-    #[inline(always)]
+    // #[inline(always)]
     pub fn self_evaluating(&self) -> bool {
         self.raw_tag() < 6
     }
-    #[inline(always)]
+    // #[inline(always)]
     pub fn fixnump(&self) -> bool {
         self.raw_tag() & 0b11 == 0
     }
-    #[inline(always)]
+    // #[inline(always)]
     pub fn pairp(&self) -> bool {
         self.tag() == Tags::Pair
     }
@@ -431,7 +431,7 @@ impl Value {
         unimplemented!()
     }
 
-    #[inline(always)]
+    // n#[inline(always)]
     pub fn immediatep(&self) -> bool {
         let val = self.get();
         val & 0b11 == 0 || val <= 0xFF // special immediates

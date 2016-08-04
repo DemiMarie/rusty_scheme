@@ -1,15 +1,18 @@
 use alloc;
-use value::{Value};
-pub fn exponential (_: Value, _: Value) -> ! { unimplemented!() }
-pub fn slow_add (_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) -> ! { unimplemented!() }
+use value::Value;
+pub fn exponential(_: Value, _: Value) -> ! {
+    unimplemented!()
+}
+pub fn slow_add(_alloc: alloc::Heap, _first: &mut Value, _other: &mut Value) -> ! {
+    unimplemented!()
+}
 /// Add two `Value`s, according to Scheme semantics.
 ///
 /// The cases where both are fixnums or both are flonums is special-cased
 /// as a fast path function, which is inlined into the interpreter.  The general case is much slower and put in a seperate function, which is not inlined.
 /// function
-#[inline(always)]
-pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
-           -> Result<Value, String> {
+// #[inline(always)]
+pub fn add(_alloc: &mut alloc::Heap, first: &Value, other: &Value) -> Result<Value, String> {
     if first.both_fixnums(other) {
         let res = (first.get() & !1).checked_add(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
@@ -33,9 +36,8 @@ pub fn add<'a>(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
         //self::slow_add(alloc, first, other)
     }
 }
-#[inline(always)]
-pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
-           -> Result<Value, String> {
+//#[inline(always)]
+pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value) -> Result<Value, String> {
     if first.both_fixnums(other) {
         let res = (first.get() & !1).checked_sub(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
@@ -47,9 +49,8 @@ pub fn subtract(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
     }
 }
 
-#[inline(always)]
-pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
-           -> Result<Value, String> {
+//#[inline(always)]
+pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value) -> Result<Value, String> {
     if first.both_fixnums(other) {
         let res = (first.get() & !1).checked_mul(other.get());
         res.ok_or("overflow not yet implemented".to_owned())
@@ -61,9 +62,8 @@ pub fn multiply(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
     }
 }
 
-#[inline(always)]
-pub fn divide(_alloc: &mut alloc::Heap, first: &Value, other: &Value)
-           -> Result<Value, String> {
+//#[inline(always)]
+pub fn divide(_alloc: &mut alloc::Heap, first: &Value, other: &Value) -> Result<Value, String> {
     if first.both_fixnums(other) {
         let (first, other) = (first.get() & !3, other.get() & !3);
         let res = first.checked_div(other);

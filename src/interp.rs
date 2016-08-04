@@ -1,8 +1,8 @@
-//! The interpreter for RustyScheme.
+//! The interpreter for `RustyScheme`.
 //!
-//! This is the part of RustyScheme that actually executes RustyScheme bytecode.
-//! It is a simple `match`-based interpreter.  Future optimizations include using
-//! tail calls to implement the equivalent of computed gotos.
+//! This is the part of `RustyScheme` that actually executes `RustyScheme`
+//! bytecode.  It is a simple `match`-based interpreter.  Future optimizations
+//! include using tail calls to implement the equivalent of computed gotos.
 //!
 //! The entry point is in `self::interpret_bytecode`.  Upon entering this
 //! function (ex. from a Rust API call), the called function must be at the
@@ -72,20 +72,25 @@ pub fn new() -> self::State {
         program_counter: 0,
         sp: 0,
         control_stack: vec![],
-        heap: alloc::Heap::new(1 << 16),
+        heap: alloc::Heap::new(1 <<
+                               if cfg!(debug_assertions) {
+            4
+        } else {
+            16
+        }),
         bytecode: vec![],
     }
 }
 
+
 /// This function interprets the Scheme bytecode.
 pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
-    use value::Kind;
     let pc = &mut s.program_counter;
     let heap = &mut s.heap;
     heap.environment = ptr::null_mut();
     let sp = &mut s.sp;
     let mut fp = 0;
-    'main: loop {
+    loop {
         let Bytecode { opcode, src, src2, dst } = s.bytecode[*pc];
         let (src, src2, dst): (usize, usize, usize) = (src.into(), src2.into(), dst.into());
         // let len = heap.stack.len();
@@ -137,13 +142,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                 // Bignums or rationals will always be slow.
                 let (fst, snd) = (heap.stack[src].get(), heap.stack[src2].get());
                 heap.stack.push(if fst & snd & 3 == 0 {
-                    let res = fst.wrapping_add(snd);
-                    if res < fst {
-                        // Overflow
-                        value::Value::new(res) // TODO: implement bignums
-                    } else {
-                        value::Value::new(res)
-                    }
+                    value::Value::new(fst.wrapping_add(snd)) // TODO: bignumx
                 } else {
                     return Err("wrong type to add".to_owned());
                 });
@@ -186,7 +185,7 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             }
 
             Opcode::MakeArray => {
-                let _value = alloc::Heap::alloc_vector(heap, src, src2);
+                alloc::Heap::alloc_vector(heap, src, src2);
                 *pc += 1;
             }
 
@@ -248,7 +247,8 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
                     heap.stack[src + fp].clone()
                 } else {
                     unsafe {
-                        (*value::Value::raw_array_get(heap.environment as *const _, src).unwrap()).clone()
+                        (*value::Value::raw_array_get(heap.environment as *const _, src).unwrap())
+                            .clone()
                     }
                 };
                 heap.stack.push(to_be_pushed.clone());
@@ -288,26 +288,21 @@ pub fn interpret_bytecode(s: &mut State) -> Result<(), String> {
             }
 
             Opcode::LoadGlobal => {
-                match heap.stack.pop().map(|x| x.kind()) {
-                    Some(Kind::Symbol(ptr)) => heap.stack.push((unsafe { &*ptr }).value.clone()),
-                    _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
-                }
                 *pc += 1;
+                try!(heap.load_global())
             }
 
             Opcode::StoreGlobal => {
-                match heap.stack.pop().map(|x| x.kind()) {
-                    Some(Kind::Symbol(ptr)) => {
-                        (unsafe { &mut *ptr }).value = heap.stack.pop().unwrap()
-                    }
-                    _ => return Err("Attempt to get the value of a non-symbol".to_owned()),
-                }
                 *pc += 1;
+                try!(heap.store_global())
             }
             _ => unimplemented!(),
         }
     }
 }
+
+
+
 
 #[cfg(test)]
 mod tests {

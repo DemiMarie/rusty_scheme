@@ -141,7 +141,8 @@ pub fn read<R: Read>(state: &mut interp::State, file: &mut R, end_char: char)
             }
             '"' => {
                 let string = String::new();
-                while let Some(Ok(new_char)) = x.next() {
+                for i in &x {
+                    let i = try!(i);
                     if new_char == '\\' {
                         string.push(try!(map_escape(try!(x.next().map_err()))))
                     }

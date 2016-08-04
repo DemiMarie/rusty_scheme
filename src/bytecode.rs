@@ -18,7 +18,7 @@ pub struct BCO {
 }
 
 pub fn get_constants_vector(bco: &BCO) -> &cell::UnsafeCell<value::Value> {
-    return &bco.constants_vector
+    &bco.constants_vector
 }
 
 /// The opcodes
@@ -143,13 +143,14 @@ pub enum BadByteCode {
         index: usize,
         required_length: usize,
         actual_length: usize,
-    }
+    },
 }
 
 pub fn allocate_bytecode(obj: &[u8], heap: &mut alloc::Heap) {
+    use value::HeaderTag;
     let (val, _) = heap.alloc_raw((size_of!(BCO) + obj.len() + (size_of!(usize) - 1)) /
                                   size_of!(value::Value),
-                                  value::BYTECODE_HEADER_TAG);
+                                  HeaderTag::Bytecode);
     let bco_obj = val as *mut BCO;
     let consts_vector = heap.stack.pop().unwrap();
     heap.stack.push(value::Value::new(val as usize | value::RUST_DATA_TAG));
@@ -166,7 +167,9 @@ pub enum SchemeResult {
     BadBytecode(BadByteCode),
 }
 #[cfg(none)]
-pub fn verify_bytecodes(b: &[Bytecode], argcount: u16, is_vararg: bool,
+pub fn verify_bytecodes(b: &[Bytecode],
+                        argcount: u16,
+                        is_vararg: bool,
                         environment_length: usize)
                         -> Result<(), BadByteCode> {
     let argcount: usize = argcount.into();

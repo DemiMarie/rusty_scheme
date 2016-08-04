@@ -1,6 +1,6 @@
 //! # The RustyScheme memory allocator and garbage collector.
 //!
-//! This module contains the RustyScheme allocator and garbage collector.
+//! This module contains the `RustyScheme` allocator and garbage collector.
 //! The collector is a simple, two-space copying collector using Cheney's
 //! algorithm.
 //!
@@ -34,12 +34,14 @@ use std::mem;
 use std::ptr;
 use std::slice;
 use super::value;
-use value::{Value, SIZEOF_PAIR, HEADER_TAG, PAIR_HEADER, SYMBOL_TAG};
+use value::{Value, SIZEOF_PAIR, HEADER_TAG, SYMBOL_TAG, Kind};
 use symbol;
 use bytecode;
-#[cfg(debug_assertions)]
-use value::Tags;
-/// An allocator for RustyScheme objects
+
+mod debug;
+
+//mod iter;
+/// An allocator for `RustyScheme` objects
 pub trait Allocator {
     /// Allocates a vector
     fn alloc_vector(&mut self, &[Value]) -> value::Vector;
@@ -65,9 +67,14 @@ pub trait Allocator {
     /// Allocates a rustdata, which contains an arbitrary Rust object
     fn alloc_rustdata<T>(&mut self, object: &T) -> value::RustData;
 
-// /// Allocates a boxed float on the top of the stack.
-// fn alloc_float(&mut self, float: f64) -> value::Float;
+    // /// Allocates a boxed float on the top of the stack.
+    // fn alloc_float(&mut self, float: f64) -> value::Float;
 }
+
+const PAIR: usize = value::HeaderTag::Pair as usize;
+const RUSTDATA: usize = value::HeaderTag::RustData as usize;
+const VECTOR: usize = value::HeaderTag::Vector as usize;
+const BYTECODE: usize = value::HeaderTag::Bytecode as usize;
 
 /// An instance of the garbage-collected Scheme heap.
 #[derive(Debug)]
@@ -88,6 +95,9 @@ pub struct Heap {
 
     /// The execution stack.
     pub stack: self::Stack,
+
+    /// The approximate amount of memory used last
+    last_mem_use: usize
 }
 
 #[repr(packed)]
@@ -128,69 +138,13 @@ pub struct Root<'a> {
     contents: &'a cell::UnsafeCell<Value>,
 }
 
-/// Consistency checks on the whole heap (in debug mode only) – sloooow.
-#[cfg(debug_assertions)]
-unsafe fn consistency_check(heap: &Vec<Value>) {
-    use symbol;
-    let mut index = 0;
-    while index < heap.len() {
-        let mut current = heap[index].clone();
-        let len = current.get() as usize & !HEADER_TAG;
-        assert!(len > 0);
-        index += 1;
-        for x in 1..len {
-            current = heap[index].clone();
-            match current.tag() {
-                Tags::Num | Tags::Num2 => {
-                    assert!(current.get() & 0b11 == 0);
-                }
-                Tags::Pair => {
-                    assert!(current.get() & 0b111 == 0b111);
-                    debug_assert_valid_value(&heap, &current);
-                    if (*current.as_ptr()).get() != PAIR_HEADER {
-                        bug!("BAD PAIR: header length is \
-                                0x{:x} and not \
-                                0x{:x} at index 0x{:x} into heap and index \
-                                0x{:x} into block",
-                             ((*current.as_ptr()).get()),
-                             PAIR_HEADER,
-                             index,
-                             x);
-                    }
-                    for i in 1..3 {
-                        debug_assert_valid_value(heap,
-                                                 &*(current.as_ptr().offset(i as isize) as *const Value))
-                    }
-                }
-                Tags::Vector => {
-                    assert!(len > 0);
-                    debug_assert_valid_value(heap, &current);
-                    for i in 1..len {
-                        debug_assert_valid_value(heap, &*current.as_ptr().offset(i as isize))
-                    }
-                }
-                Tags::Symbol => {
-                    assert!(len == size_of!(symbol::Symbol) / size_of!(usize));
-                    debug_assert_valid_value(heap, &current);
-                    debug_assert_valid_value(heap, &*current.as_ptr().offset(1))
-                }
-                _ => unimplemented!(),
-            }
-            index += 1;
-        }
-    }
-}
-
-#[cfg(not(debug_assertions))]
-unsafe fn consistency_check(_heap: &Vec<Value>) {}
-
 /// Rounds the size of a heap object up to the nearest multiple of 8 bytes,
 /// expressed in words.
 fn align_word_size(size: usize) -> usize {
     let size_of_value = ::std::mem::size_of::<Value>();
     debug_assert!((!0b1usize).wrapping_add(2) == 0);
     let x = match size_of_value {
-        4 => size + 1 & !0b1,
+        4 => (size + 1) & !0b1,
         8 => size,
         _ => ((size * size_of_value + 0b111) & !0b111) / size_of_value,
     };
@@ -215,12 +169,32 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
     }
     let size_of_value: usize = size_of!(Value);
     (*current).size().map(|size| {
+        if size == 0 && (*current).tag() == value::Tags::Symbol {
+            // Symbols.
+            // These need to be treated specially, since they are not copied.
+            let mut current = current;
+            let mut chain_length = 0;
+            loop {
+                let ptr = (*current).as_ptr() as *mut symbol::Symbol;
+                if (*ptr).alive.get() { return }
+                chain_length += 1;
+                (*ptr).alive.set(true);
+                current = (*ptr).contents.get();
+                if (*current).tag() != value::Tags::Symbol {
+                    debug!("Current: current = {:p}, *current = {:x}",
+                           current,
+                           (*current).get());
+                    debug!("Chain length: {}", chain_length);
+                    return relocate(current, tospace, fromspace)
+                }
+            }
+        }
         // pointer to head of object being copied
         let pointer: *mut Value = (*current).as_ptr();
 
-        debug!("HEADER_TAG is {:b}\n", HEADER_TAG);
+        //debug!("HEADER_TAG is {:b}\n", HEADER_TAG);
 
-        let header = (*pointer).get().clone();
+        let header = (*pointer).get();
         // Assert that the object header is nonzero.
         debug_assert!(header != 0,
                       "internal error: copy_value: invalid object header size");
@@ -264,7 +238,8 @@ unsafe fn relocate(current: *mut Value, tospace: &mut Vec<Value>, fromspace: &mu
                 // NOTE: this MUST come before replacing the old object with
                 // a forwarding pointer – otherwise, this replacement will
                 // clobber the copied object's header!
-                tospace.extend_from_slice(slice::from_raw_parts(pointer, amount_to_copy));
+                tospace.extend_from_slice(slice::from_raw_parts(pointer,
+                                                                amount_to_copy));
             }
             *pointer = Value::new(HEADER_TAG);
             *current = Value::new(end as usize | ((*current).get() & 0b111));
@@ -289,20 +264,15 @@ unsafe fn scavange_heap(tospace: &mut Vec<Value>, fromspace: &mut Vec<Value>) {
         match tag {
             value::HEADER_TAG => /* Forwarding pointer */
                 bug!("Forwarding pointer in tospace"),
-            value::PAIR_HEADER_TAG => /* Pair */ {
+            PAIR => /* Pair */ {
                 debug_assert!(size == 3)
             }
-            value::SYMBOL_HEADER_TAG => /* Symbol */ {
-                relocate(current.offset(offset), tospace, fromspace);
+            RUSTDATA => /* Rustdata – not scanned by the GC */ {
                 offset += size as isize - 1;
                 continue;
             }
-            value::RUSTDATA_HEADER_TAG => /* Rustdata – not scanned by the GC */ {
-                offset += size as isize - 1;
-                continue;
-            }
-            value::VECTOR_HEADER_TAG => /* Vector-like object */ { }
-            value::BYTECODE_HEADER_TAG => /* Bytecode object */ {
+            VECTOR => /* Vector-like object */ { }
+            BYTECODE => /* Bytecode object */ {
                 let ptr: *mut bytecode::BCO = current.offset(-1) as *mut _;
                 relocate(bytecode::get_constants_vector(&*ptr).get(), tospace,
                          fromspace);
@@ -337,15 +307,15 @@ unsafe fn scavange_stack(stack: &mut Vec<Value>,
 }
 
 /// Performs a full garbage collection
-fn collect(heap: &mut Heap) {
+pub fn collect(heap: &mut Heap) {
     debug!("Initiated garbage collection");
     unsafe {
         if cfg!(debug_assertions) {
             for i in &heap.stack.innards {
-                debug_assert_valid_value(&heap.tospace, i)
+                debug::assert_valid_heap_pointer(&heap.tospace, i)
             }
+            debug::consistency_check(&heap.tospace);
         }
-        consistency_check(&heap.tospace);
         debug!("Completed first consistency check");
         mem::swap(&mut heap.tospace, &mut heap.fromspace);
         heap.tospace.reserve(heap.fromspace.len() + heap.fromspace.len() / 2);
@@ -353,6 +323,7 @@ fn collect(heap: &mut Heap) {
                heap.fromspace.len() + heap.fromspace.len() / 2);
         heap.tospace.resize(0, Value::new(0));
         debug!("Tospace resized to {}", heap.tospace.capacity());
+        debug!("Stack size is {}", heap.stack.len());
         scavange_stack(&mut heap.stack, &mut heap.tospace, &mut heap.fromspace);
         debug!("Stack scavanged");
         scavange_heap(&mut heap.tospace, &mut heap.fromspace);
@@ -361,12 +332,13 @@ fn collect(heap: &mut Heap) {
         debug!("Fixed up symbol table");
         if cfg!(debug_assertions) {
             for i in &heap.stack.innards {
-                debug_assert_valid_value(&heap.tospace, i)
+                debug::assert_valid_heap_pointer(&heap.tospace, i)
             }
+            debug::consistency_check(&heap.tospace);
         }
-        consistency_check(&heap.tospace);
         debug!("Completed second consistency check");
         heap.fromspace.resize(0, Value::new(0));
+        heap.last_mem_use = heap.fromspace.capacity() + 8*heap.symbol_table.contents.len()
     }
 }
 
@@ -388,24 +360,8 @@ impl Deref for Stack {
 
 /// A `Stack` acts like a `Vec`.
 impl DerefMut for Stack {
-    fn deref_mut<'a>(&'a mut self) -> &'a mut Vec<value::Value> {
+    fn deref_mut(&mut self) -> &mut Vec<value::Value> {
         &mut self.innards
-    }
-}
-
-/// Assert a value is valid (in debug mode)
-fn debug_assert_valid_value(vec: &Vec<Value>, i: &Value) {
-    if cfg!(debug_assertions) {
-        let lower_limit = vec.as_ptr() as usize;
-        let upper_limit = lower_limit + vec.len() * size_of!(usize);
-        let contents = i.contents.get();
-        let untagged = contents & !0b111;
-        if !(contents & 0b11 == 0 || (untagged >= lower_limit && untagged < upper_limit)) {
-            let contents = contents;
-            bug!("internal error: argument not fixnum or pointing into \
-                  tospace: {:x}",
-                 contents)
-        }
     }
 }
 
@@ -416,12 +372,12 @@ impl Heap {
     pub fn alloc_pair(&mut self, car: usize, cdr: usize) {
         if cfg!(debug_assertions) {
             for i in &[car, cdr] {
-                debug_assert_valid_value(&self.tospace, &self.stack[*i])
+                debug::assert_valid_heap_pointer(&self.tospace, &self.stack[*i])
             }
         }
         // unsafe { consistency_check(&self.tospace) }
         let x = SIZEOF_PAIR;
-        self.alloc_raw(x, value::PAIR_HEADER_TAG);
+        self.alloc_raw(x, value::HeaderTag::Pair);
         let len = if size_of!(usize) < 8 {
             self.tospace.extend_from_slice(&[self.stack[car].clone(),
                                              self.stack[cdr].clone(),
@@ -434,22 +390,44 @@ impl Heap {
         let new_value = Value::new(unsafe {
             self.tospace.as_ptr().offset(len as isize) as usize | value::PAIR_TAG
         });
-        debug_assert_valid_value(&self.tospace, &new_value);
+        if cfg!(debug_assertions) {
+            debug::assert_valid_heap_pointer(&self.tospace, &new_value);
+        }
         self.stack.push(new_value);
         // unsafe { consistency_check(&self.tospace) }
         // debug!("Allocated a pair")
     }
 
+    pub fn check_must_collect(&mut self) {
+        let should_collect = 8*self.symbol_table.contents.len() +
+            self.tospace.capacity() >
+            ((2*self.last_mem_use) + if cfg!(debug_assertions) {
+                1
+            } else{
+                1 << 16
+            });
+        if should_collect {
+            collect(self)
+        }
+    }
+
     /// FIXME use enum for tag
-    pub fn alloc_raw(&mut self, space: usize, tag: usize) -> (*mut libc::c_void, usize) {
+    pub fn alloc_raw(&mut self, space: usize,
+                     tag: value::HeaderTag) -> (*mut libc::c_void, usize) {
         debug_assert!(space > 1);
         let real_space = align_word_size(space);
         let tospace_space = self.tospace.capacity() - self.tospace.len();
-        if tospace_space < real_space {
+        if tospace_space < real_space  {
             collect(self);
+        } else {
+            self.check_must_collect()
         }
-        let alloced_ptr = self.tospace.as_ptr() as usize + self.tospace.len();
-        self.tospace.push(Value::new(space | tag));
+        debug_assert!(((self.tospace.len()*size_of!(usize)) & 7) == 0);
+        let alloced_ptr = unsafe {
+            self.tospace.as_ptr().offset(self.tospace.len() as isize)
+        };
+        self.tospace.push(Value::new(space | tag as usize));
+        debug_assert!(alloced_ptr as usize & 7 == 0);
         (alloced_ptr as *mut libc::c_void,
          self.tospace.len() + real_space)
     }
@@ -457,12 +435,12 @@ impl Heap {
     /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, start: usize, end: usize) {
         let (value_ptr, final_len) = self.alloc_raw(end - start + 2,
-                                                    value::VECTOR_HEADER_TAG);
+                                                    value::HeaderTag::Vector);
         self.tospace.push(Value::new(0));
         let ptr = value_ptr as usize | value::VECTOR_TAG;
         {
             let stack = &self.stack[start..end];
-            self.tospace.extend_from_slice(&stack);
+            self.tospace.extend_from_slice(stack);
         }
         unsafe { self.tospace.set_len(final_len) };
         self.stack.push(Value::new(ptr));
@@ -474,7 +452,7 @@ impl Heap {
         let vararg = src & ::std::i8::MIN as u8 == 0;
         let stack_len = self.stack.len();
         let (value_ptr, final_len) = self.alloc_raw(upvalues + 2,
-                                                    value::VECTOR_HEADER_TAG);
+                                                    value::HeaderTag::Vector);
         let ptr = {
             let elements = &self.stack[stack_len - upvalues..stack_len];
             let ptr = value_ptr as usize | value::VECTOR_TAG;
@@ -493,49 +471,50 @@ impl Heap {
         Heap {
             fromspace: Vec::with_capacity(size),
             tospace: Vec::with_capacity(size),
-            symbol_table: symbol::SymbolTable::new(),
+            symbol_table: symbol::SymbolTable::default(),
             environment: ptr::null_mut(),
             constants: ptr::null(),
             stack: Stack { innards: Vec::with_capacity(1 << 16) },
+            last_mem_use: 1<<16
         }
     }
 
-    /// Interns a symbol.  TODO doesn't actually intern it.
-    pub fn intern(&mut self, string: String) {
-        use symbol;
-        use std::cell;
-        use std::collections::hash_map::Entry;
-        // match self.symbol_table.get(string)
-        let mut boxed = symbol::Symbol {
-            header: value::SYMBOL_HEADER_TAG | size_of!(symbol::Symbol) / size_of!(usize),
-            value: Value::new(value::FALSE), // immediate – not changed by GC
-            name: string.to_owned(),
-        };
-        let key = symbol::Key(cell::Cell::new(&mut boxed));
-        let val =
-            match self.symbol_table.entry(key) {
-                Entry::Occupied(o) => {
-                    let x = o.key().get();
-                    drop(o);
-                    Some(x)
+    /// Interns a symbol.
+    pub fn intern(&mut self, string: &str) {
+        use symbol::Symbol;
+        use std::rc::Rc;
+        {
+            let rc = Rc::new(string.to_owned());
+            let val = self.symbol_table.contents
+                                       .entry(rc.clone())
+                                       .or_insert_with(|| Box::new(Symbol::new(rc)));
+            self.stack.push(Value::new(&mut(**val) as *mut _ as usize |
+                                       value::SYMBOL_TAG))
+        }
+        self.check_must_collect()
+    }
+
+
+    pub fn store_global(&mut self) -> Result<(), String> {
+        match self.stack.pop().unwrap().kind() {
+            Kind::Symbol(ptr) => {
+                let val = self.stack.pop().unwrap();
+                unsafe {
+                    Ok(*(*ptr).contents.get() = val)
+                }
             }
-            Entry::Vacant(x) => {
-                x.insert(());
-                None
+            _ => Err("Attempt to get the value of a non-symbol".to_owned()),
+        }
+    }
+
+    pub fn load_global(&mut self) -> Result<(), String> {
+        match self.stack.pop().map(|x| x.kind()) {
+            Some(Kind::Symbol(ptr)) => {
+                let contents = unsafe { &*(*ptr).contents.get() };
+                Ok(self.stack.push(contents.clone()))
             }
-        };
-        let ptr = val.unwrap_or_else(|| unsafe {
-            let (ptr, len) =
-                self.alloc_raw(size_of!(symbol::Symbol)/size_of!(usize),
-                               value::SYMBOL_HEADER_TAG);
-            let ptr = ptr as *mut symbol::Symbol;
-            self.tospace.set_len(len);
-            (*ptr).name = string;
-            (*ptr).value = self.stack.pop().unwrap();
-            ptr
-        });
-        let value = Value::new(ptr as usize | value::SYMBOL_TAG);
-        self.stack.push(value);
+            _ => Err("Attempt to get the value of a non-symbol".to_owned()),
+        }
     }
 }
 
@@ -577,12 +556,12 @@ mod tests {
             // super::collect(&mut heap);
             assert_valid(&heap);
             assert!(heap.tospace.len() >= 3 * i)
-        }
-        heap.stack.pop();
-        assert!(heap.stack.len() == 0);
-        // assert!(heap.fromspace.capacity() > 3* (1 << 20));
-        // debug!("{:?}", heap);
-        super::collect(&mut heap);
-        assert!(heap.tospace.len() == 0)
     }
+    heap.stack.pop();
+    assert!(heap.stack.len() == 0);
+    // assert!(heap.fromspace.capacity() > 3* (1 << 20));
+    // debug!("{:?}", heap);
+    super::collect(&mut heap);
+    assert!(heap.tospace.len() == 0)
+}
 }

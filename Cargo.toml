@@ -9,8 +9,11 @@ keywords = ["scheme", "interpreter", "scripting"]
 
 [dependencies]
 libc = "*"
+log = "*"
+env_logger = "*"
 
 [features]
 default = ["memcpy-gc"]
 memcpy-gc = []
 debug-logging = []
+clippy = []
