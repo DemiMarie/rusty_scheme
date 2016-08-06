@@ -36,7 +36,7 @@ mod bytecode;
 mod alloc;
 mod symbol;
 mod interp;
-// mod read;
+mod read;
 mod api;
 pub use api::*;
 pub use bytecode::{Opcode, BCO};
