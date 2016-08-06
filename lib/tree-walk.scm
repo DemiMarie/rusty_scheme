@@ -21,13 +21,14 @@
    compile-form
    pp-compiled-form)
   (import
+   #;(only (rnrs base) car cdr pair? symbol? error define lambda)
    (rnrs base)
    (rnrs io simple)
    (only (rnrs eval) eval)
    (only (srfi :1) proper-list? circular-list? fold)
    (only (srfi :43) vector-copy)
    (only (srfi :69) hash-table-set! hash-table-ref)
-   (only (guile) interaction-environment)
+   (only (guile) interaction-environment parameterize)
    (environment)
    (bytecode)
    (only (ice-9 pretty-print) pretty-print))
@@ -78,7 +79,8 @@
         ;; error message.
         (error 'syntax (cons "Named \"letrec\" not allowed" bindings)))
        (else
-        (error 'syntax (cons "Invalid \"letrec\" form" list))))))
+        (error 'syntax (cons "Invalid \"letrec\" form" list)))))
+    (values))
 
   ;; Compile a `let` form.
   (define (compile-let list env bco)
@@ -111,7 +113,8 @@
                         ,@(cddr list))))
               (,bindings ,@(map cadr real-bindings)))) env bco))
        (else
-        (error 'syntax (cons "Invalid \"let\" form" list))))))
+        (error 'syntax (cons "Invalid \"let\" form" list)))))
+    (values))
 
   ;; Immediately applied simple lambdas are treated specially.
   ;; Specifically, they are treated as `let` forms.  This allows
@@ -136,7 +139,8 @@
 to immediately-invoked lambda" pair)))
         (compile-function-call
          (compile-pair head env bco)
-         rest-of-form env bco)))
+         rest-of-form env bco))
+    (values))
 
   ;; Compile a pair (the only hard case)
   (define (compile-pair pair env bco)
@@ -194,7 +198,8 @@ length 3" pair))
                  (compile-function-call
                   (lookup-environment env head bco) rest-of-form env bco))))))
        (else
-        (error 'syntax "Invalid procedure in function call" pair)))))
+        (error 'syntax "Invalid procedure in function call" pair))))
+    (values))
 
   ;; Compile a lambda
   (define (compile-lambda form env bco)
@@ -218,7 +223,8 @@ length 3" pair))
                 (error 'syntax "Invalid lambda – non-symbol rest" pair))))))
         (bind-arguments symbols env)
         (compile-sequence (cdr form) env bco)
-        (map (lambda (x) (unbind-argument x env)) symbols))))
+        (map (lambda (x) (unbind-argument x env)) symbols)))
+    (values))
 
   (define (compile-internal-defines form-with-defines env bco)
     (define (translate-internal-define rest)
@@ -254,7 +260,8 @@ not allowed in expression position" form))
             (pretty-print "\n")
             (pretty-print (reverse list-to-compile))
             #;(flush-output-port (standard-output-port))
-            (compile-letrec (reverse list-to-compile) env bco)))))
+            (compile-letrec (reverse list-to-compile) env bco)
+            (values)))))
 
   (define (compile-sequence form env bco)
     "Compile a sequence to bytecode.  Internal defines are properly handled."
@@ -286,7 +293,8 @@ but not more than 3")))
                    (compile-form
                     (if (null? last-of-form)
                         #t
-                        (car last-of-form)) env bco)))))
+                        (car last-of-form)) env bco))))
+    (values))
 
   (define (compile-define defined env bco)
     "Compile a toplevel `define` declaration"
@@ -298,7 +306,8 @@ allowed in expression context")
       (emit-toplevel-set!
        bco
        (car translated)
-       (compile-form (cadr translated) env bco))))
+       (compile-form (cadr translated) env bco)))
+    (values))
 
   (define (compile-function-call function args env bco)
     "Compile an indirect function call"
@@ -328,7 +337,8 @@ allowed in expression context")
                                   (newline)
                                   (compile-form arg env bco)))))
                         args)))
-              (apply emit bco (car function) params))))))
+              (apply emit bco (car function) params)))))
+    #f)
   (define (compile-set! form env bco)
     "Compile an assignment (`set!`)"
     (or (and (proper-list? form)
@@ -337,7 +347,8 @@ allowed in expression context")
     (or (symbol? (car form)) (syntax-violation form))
     (compile-form (cadr form) env bco)
     (emit-set! bco
-               (lookup-environment env (car form) bco)))
+               (lookup-environment env (car form) bco))
+    #f)
 
   ;; Compile a given form to bytecode.
   ;;
@@ -347,19 +358,20 @@ allowed in expression context")
   ;; Return value: the stack index where the return value is located.
   (define (compile-form form env bco . return-values)
     (assert (not (procedure? form)))
-    (let ((main-retval
-           (cond
-            ((pair? form) ; Pair = function call OR special form
-             (compile-pair form env bco))
-            ((symbol? form) ; Symbol = variable reference
-             (emit-load bco (lookup-environment env form bco)))
-            #;((eq? form '())
-             (error
-              'syntax
-              "() is not legal Scheme – did you mean '()?" form))
-            (else ; Anything else evaluates to itself
-             (emit-constant bco form)))))
-      (values main-retval bco)))
+    (cond
+     ((pair? form) ; Pair = function call OR special form
+      (compile-pair form env bco))
+     ((symbol? form) ; Symbol = variable reference
+      (emit-load bco (lookup-environment env form bco)))
+     ;; () unquoted is not legal Scheme, but Femtolisp's system.lsp (our stdlib)
+     ;; depends on it being self-evaluating.
+     #;((eq? form '())
+      (error
+       'syntax
+       "() is not legal Scheme – did you mean '()?" form))
+     (else ; Anything else evaluates to itself
+      (emit-constant bco form)))
+    #f)
 
   (define (pp-compiled-form form)
     (let-values (((_ignored bco)

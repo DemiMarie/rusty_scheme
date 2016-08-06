@@ -175,8 +175,14 @@
            (emit bco 'load-nil)
            ;; Memoize the objects using the bytecode object's memo table
            (let ((index (hash-table-ref (memo bco) object (lambda () #f))))
-             (emit bco 'load-constant-index
-                   (if index index (add-to-constant-vector bco object))))))))
+             (emit bco
+                   'load-constant-index
+                   (if index
+                       index
+                       (begin
+                         (add-to-constant-vector bco object)
+                         (hash-table-set! (memo bco) object
+                                          (bco.consts-len bco))))))))))
 
   (define (emit-set! bco stack-position)
     (cond
