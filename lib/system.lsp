@@ -57,9 +57,9 @@
 
 (define-macro (letrec binds . body)
   `((lambda ,(map car binds)
-      ,.(map (lambda (b) `(set! ,@b)) binds)
+      ,@(map (lambda (b) `(set! ,@b)) binds)
       ,@body)
-    ,.(map (lambda (x) (void)) binds)))
+    ,@(map (lambda (x) (void)) binds)))
 
 (define-macro (let binds . body)
   (let ((lname #f))
@@ -480,7 +480,7 @@
 	  (else            `(memv ,key ',v))))
   (let ((g (gensym)))
     `(let ((,g ,key))
-       (cond ,.(map (lambda (clause)
+       (cond ,@(map (lambda (clause)
 		      (cons (vals->cond g (car clause))
 			    (cdr clause)))
 		    clauses)))))
@@ -501,8 +501,8 @@
 			     ,@(cdr test-spec))
 			   (begin
 			     ,@commands
-			     (,loop ,.steps))))))
-       (,loop ,.inits))))
+			     (,loop ,@steps))))))
+       (,loop ,@inits))))
 
 ; SRFI 8
 (define-macro (receive formals expr . body)
@@ -831,7 +831,7 @@
 	  (vars    (l-vars (cadr e))))
       (let ((env   (nconc (map list vars) env)))
 	`(lambda ,(expand-lambda-list formals env)
-	   ,.(expand-body body env)
+	   ,@(expand-body body env)
 	   . ,name))))
   
   (define (expand-define e env)
@@ -845,7 +845,7 @@
 	      (vars    (l-vars (cdadr e))))
 	  (let ((env   (nconc (map list vars) env)))
 	    `(define ,(cons name (expand-lambda-list formals env))
-	       ,.(expand-body body env))))))
+	       ,@(expand-body body env))))))
   
   (define (expand-let-syntax e env)
     (let ((binds (cadr e)))
