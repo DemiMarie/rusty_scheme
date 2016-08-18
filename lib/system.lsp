@@ -29,14 +29,14 @@
 (if (not (bound? '*syntax-environment*))
     (define *syntax-environment* (table)))
 
-(define (set-syntax! s v) (put! *syntax-environment* s v))
-(define (symbol-syntax s) (get *syntax-environment* s #f))
+#;(define (set-syntax! s v) (put! *syntax-environment* s v))
+#;(define (symbol-syntax s) (get *syntax-environment* s #f))
 
-(define-macro (define-macro form . body)
+#;(define-macro (define-macro form . body)
   `(set-syntax! ',(car form)
 		(lambda ,(cdr form) ,@body)))
 
-#;(define (map1 f lst acc)
+(define (map1 f lst acc)
   (cdr
    (prog1 acc
 	  (while (pair? lst)
@@ -44,13 +44,13 @@
 			      (cdr (set-cdr! acc (cons (f (car lst)) ()))))
 			(set! lst (cdr lst)))))))
 
-#;(define (mapn f lsts)
+(define (mapn f lsts)
   (if (null? (car lsts))
       ()
       (cons (apply f (map1 car lsts (list ())))
 	    (mapn  f (map1 cdr lsts (list ()))))))
 
-#;(define (map f lst . lsts)
+(define (map f lst . lsts)
   (if (null? lsts)
       (map1 f lst (list ()))
       (mapn f (cons lst lsts))))
