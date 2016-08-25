@@ -1,5 +1,5 @@
 ;;; -*- scheme -*-
-(import
+#;(import
    (rnrs)
    (only (srfi :43) vector-copy)
    (tree-walk)
@@ -8,11 +8,15 @@
    (assembler)
    (only (guile) parameterize)
    (ice-9 pretty-print))
-
+(include "bytecode.scm")
+#;(include "assembler.scm")
+(include "environment.scm")
+(include "tree-walk.scm")
 (define (bound? sym) (symbol-bound? #f sym))
 (define aset! vector-set!)
 (define aref vector-ref)
 (define (atom? obj) (not (pair? obj)))
+(define (void) #t)
 (define bco (create-bco))
 (define env (env.new))
 (define (compile-one-form)
@@ -20,7 +24,7 @@
     (if (eof-object? res)
         (values)
         (begin
-          (compile-form res env bco)
+          (compile-form res env bco #f)
           (compile-one-form)))))
 (let ((tmp-bco (create-bco))
       (tmp-env (env.new)))
@@ -37,8 +41,9 @@
                       (bco.len bco)
                       #f)))
     (pretty-print
-     `#(,instrs
-        ,(vector-copy (bco.consts bco)
+     (vector
+      instrs
+      (vector-copy (bco.consts bco)
                       0
                       (bco.consts-len bco)
                       #f)))))

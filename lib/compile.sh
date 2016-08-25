@@ -11,4 +11,4 @@ run_guile () {
     #ikarus --r6rs-script main.scm
 }
 
-run_guile ~/repos/femtolisp/system.lsp
+run_guile "$LOADPATH/system.lsp"

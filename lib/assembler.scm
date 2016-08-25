@@ -1,11 +1,37 @@
-(library
-    (assembler)
-  (export assemble-bytecode)
-  (import
-   (bytecode)
-   (rnrs)
-   (srfi :43))
+(define instruction-table (make-hashtable))
+(define instructions
+  '(car cdr set-car! set-cdr! pair?
+        + - * / exp
+        vector vector-set! vector-ref vector? vector-length
+        apply call tail-call return closure
+        set
+        load-constant load-argument load-environment load-global
+        load-f load-t load-nil load-0 load-1
+        store-environment store-argument store-global))
 
+(do
+    (
+ (lambda (x) (hashtable-set! instruction-table (car x) (cadr x)))
+ '((car 0)
+   (cdr 1)
+   (set-car! 2)
+   (set-cdr! 3)
+   (pair? 4)
+   (+ 5)
+   (- 6)
+   (* 7)
+   (/ 8)
+   (exp 9)
+   (vector 10)
+   (vector-set! 11)
+   (vector-ref 12)
+   (vector? 13)
+   (vector-length 14)
+   (apply 15)
+   (call 16)
+   (tail-call 17)
+   (return 18)
+   (
   (define (assemble-instr port instr)
     (case (car instr)
       ((cons) (put-u8 port 0))
@@ -16,12 +42,9 @@
       ((pair?) (put-u8 port 5))
       ((+) (put-u8 port 6)
        (put-u8 port (cadr instr)))
-      ((-) (put-u8 port 7)
-       (put-u8 port (cadr instr)))
-      ((*) (put-u8 port 8)
-       (put-u8 port (cadr instr)))
-      ((/) (put-u8 port 9)
-       (put-u8 port (cadr instr)))
+      ((-) (put-u8 port 7))
+      ((*) (put-u8 port 8))
+      ((/) (put-u8 port 9))
       ((exp) (put-u8 port 10)
        (put-u8 port (cadr instr)))
       ((make-vector) (put-u8 port 11))

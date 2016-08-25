@@ -55,29 +55,6 @@
       (map1 f lst (list ()))
       (mapn f (cons lst lsts))))
 
-(define-macro (letrec binds . body)
-  `((lambda ,(map car binds)
-      ,@(map (lambda (b) `(set! ,@b)) binds)
-      ,@body)
-    ,@(map (lambda (x) (void)) binds)))
-
-(define-macro (let binds . body)
-  (let ((lname #f))
-    (if (symbol? binds)
-	(begin (set! lname binds)
-	       (set! binds (car body))
-	       (set! body (cdr body))))
-    (let ((thelambda
-	   `(lambda ,(map (lambda (c) (if (pair? c) (car c) c))
-			  binds)
-	      ,@body))
-	  (theargs
-	   (map (lambda (c) (if (pair? c) (cadr c) (void))) binds)))
-      (cons (if lname
-		`(letrec ((,lname ,thelambda)) ,lname)
-		thelambda)
-	    theargs))))
-
 (define-macro (cond . clauses)
   (define (cond-clauses->if lst)
     (if (atom? lst)
@@ -697,10 +674,10 @@
 
 (define (string.tail s n) (string.sub s (string.inc s 0 n)))
 
-(define *whitespace*
-  (string.encode #array(wchar 9 10 11 12 13 32 133 160 5760 6158 8192
-			      8193 8194 8195 8196 8197 8198 8199 8200
-			      8201 8202 8232 8233 8239 8287 12288)))
+;;(define *whitespace*
+;;  (string.encode #array(wchar 9 10 11 12 13 32 133 160 5760 6158 8192
+;;			      8193 8194 8195 8196 8197 8198 8199 8200
+;;			      8201 8202 8232 8233 8239 8287 12288)))
 
 (define (string.trim s at-start at-end)
   (define (trim-start s chars i L)
