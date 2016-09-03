@@ -132,8 +132,9 @@
                      index
                      (begin
                        (add-to-constant-vector bco object)
-                       (hash-table-set! (memo bco) object
-                                        (bco.consts-len bco))))))))))
+                       (let ((len (bco.consts-len bco)))
+                         (hash-table-set! (memo bco) object len)
+                         len)))))))))
 
 (define (emit-set! bco stack-position)
   (cond

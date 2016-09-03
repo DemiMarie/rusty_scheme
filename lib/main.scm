@@ -24,7 +24,7 @@
     (if (eof-object? res)
         (values)
         (begin
-          (compile-form res env bco #f)
+          (compile-toplevel-form res env bco)
           (compile-one-form)))))
 (let ((tmp-bco (create-bco))
       (tmp-env (env.new)))

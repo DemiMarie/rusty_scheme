@@ -33,9 +33,10 @@
   (assert (or (eqv? (car form) 'define) (eqv? (car form) 'define-macro)))
   (if (pair? (cdr form))
       (let ((head (cadr form)))
-        (if (pair? head)
-            (list (car head) `(lambda ,(cdr head) ,@(cddr form)))
-            (cdr form)))
+        (cons 'set!
+              (if (pair? head)
+                  `(,(car head) (lambda ,(cdr head) ,@(cddr form)))
+                  (cdr form))))
       (error 'syntax "Bad define form" form)))
 
 (define (check-let-bindings bindings bad-binding-msg
@@ -106,7 +107,7 @@ to immediately-invoked lambda" pair))
                       (bind-variable x env (+ 1 depth))
                       (set! depth (+ 1 depth)))
                     arglist)
-          (compile-form (cddr head) env bco is-tail)
+          (compile-sequence (cddr head) env bco is-tail)
           (for-each (lambda (sym) (unbind-argument sym env)) arglist)))
       (begin
         (compile-pair head env bco #f)
@@ -252,7 +253,7 @@ but not more than 3")))
   (if (expression-context? env)
       (error 'syntax "declaration \"define\" not \
 allowed in expression context"))
-  (let ((translated (translate-define defined)))
+  (let ((translated (cdr (translate-define defined))))
     (compile-form (cddr translated) env bco #t)
     (emit
      bco
@@ -353,30 +354,13 @@ allowed in expression context"))
                    (cdr form)))
         ((define-macro)
          (let ((form-to-execute
-                (translate-define form)))
+                (cdr (translate-define form))))
            (pretty-print (cadr form-to-execute))
            (hash-table-set! (env.macros env)
                             (car form-to-execute)
                             (eval
                              (cadr form-to-execute)
                              (interaction-environment)))))
-        ((set-syntax!)
-         (let ((rest-of-form (cdr form)))
-           (or (pair? rest-of-form)
-               (error 'syntax "bad set-syntax! – must be head of list of \
-length 3" form))
-           (let ((name (car rest-of-form))
-                 (bound (cdr rest-of-form)))
-             (if (and (symbol? name)
-                      (pair? bound)
-                      (null? (cdr bound))
-                      (pair? (car bound))
-                      (eq? (caar bound) 'lambda))
-                 (hash-table-set! (env.macros env)
-                                  (car rest-of-form)
-                                  (eval (cadr (rest-of-form))
-                                        (interaction-environment)))
-                 (error 'syntax "Bad set-syntax! form" form)))))
         (else
          (compile-form form env bco #f)))
       (compile-form form env bco #f)))
