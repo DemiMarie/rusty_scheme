@@ -434,6 +434,7 @@ impl Heap {
 
     /// Allocates a vector.  The `elements` array must be rooted for the GC.
     pub fn alloc_vector(&mut self, start: usize, end: usize) {
+        assert!(end >= start);
         let (value_ptr, final_len) = self.alloc_raw(end - start + 2,
                                                     value::HeaderTag::Vector);
         self.tospace.push(Value::new(0));

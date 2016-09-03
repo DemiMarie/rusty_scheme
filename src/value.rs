@@ -365,10 +365,19 @@ pub enum HeaderTag {
     Pair = 0b11 << (self::SIZEOF_PTR * 8 - 2),
 
     /// The header tag of a function.
-    Bytecode = 0b011 << (self::SIZEOF_PTR * 8 - 3),
+    Bytecode = 0b101 << (self::SIZEOF_PTR * 8 - 3),
 
     /// The header of a `RustData`.
     RustData = 0b100 << (self::SIZEOF_PTR * 8 - 3),
+
+    /// The header of a closure
+    Closure = 0b011 << (self::SIZEOF_PTR * 8 - 3),
+
+    /// The header of a finalized RustData
+    Finalized = 0b010 << (self::SIZEOF_PTR * 8 - 3),
+
+    /// The header of a Scheme record
+    Record = 0b001 << (self::SIZEOF_PTR * 8 - 3),
 
     /// The header of a vector.
     Vector = 0,

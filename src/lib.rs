@@ -33,6 +33,7 @@ mod value;
 mod state;
 mod arith;
 mod bytecode;
+mod string;
 mod alloc;
 mod symbol;
 mod interp;

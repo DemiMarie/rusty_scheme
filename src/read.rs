@@ -3,7 +3,7 @@ use std::io::prelude::*;
 use std::char;
 use std::iter::Peekable;
 use super::interp;
-
+use super::api;
 #[derive(Debug)]
 pub enum ReadError {
     /// EOF in list
@@ -48,11 +48,30 @@ pub enum ReadError {
 
     /// `|` in symbol unescaped
     PipeInSymbol,
+
+    /// Bad hex number
+    BadHexNumber,
+
+    /// Integer overflow
+    Overflow,
+
+    /// Bad use of `.`
+    BadDot,
+
+    /// Mismatched parentheses
+    ParenMismatch,
+
+    /// Host-set memory limit exceeded
+    MemLimitExceeded,
+
+    /// Not yet implemented
+    NYI,
 }
 
 /// An event that can be emitted by the reader or tree-walker, and which
 /// is part of the stream that is consumed by the tree-builder, printer,
 /// and bytecode compiler.
+#[derive(Clone, Debug)]
 pub enum Event {
     /// A string
     Str(String),
@@ -123,10 +142,10 @@ enum StringOrSymbol {
     String,
     Symbol,
 }
-
-fn char_from_stream_and_byte<R: BufRead>(file: &mut Peekable<Bytes<R>>,
-                                         unicode_char: u8)
-                                         -> Result<char, ReadError> {
+use self::ReadError::IoError;
+fn finish_char<R: BufRead>(file: &mut Peekable<Bytes<R>>,
+                           unicode_char: u8)
+                           -> Result<char, ReadError> {
     if unicode_char <= 0x7F {
         return Ok(unicode_char as char);
     }
@@ -137,18 +156,17 @@ fn char_from_stream_and_byte<R: BufRead>(file: &mut Peekable<Bytes<R>>,
             let len = len - 1;
             let mut value: u32 = (unicode_char >> (len + 2)).into();
             value <<= len * 6;
-            for (count, current_byte_value) in file.take(len.into()).enumerate() {
-                let current: u32 = try!(current_byte_value.map_err(ReadError::IoError)).into();
-                value &= current << (len - count as u8)
+            for (count, val) in &mut file.take(len.into()).enumerate() {
+                value &= (try!(val.map_err(IoError)) as u32) << (len - count as u8)
             }
-            char::from_u32(value).ok_or(ReadError::InvalidUtf8(value))
+            char::from_u32(value).ok_or_else(|| ReadError::InvalidUtf8(value))
         }
         _ => unreachable!(),
     }
 }
 macro_rules! next {
     ($exp: expr, $err: expr) => {
-        try!(try!($exp.next().ok_or($err)).map_err(|x|ReadError::IoError(x)))
+        try!(try!($exp.next().ok_or($err)).map_err(ReadError::IoError))
     }
 }
 
@@ -210,7 +228,6 @@ fn process_escape<R: BufRead>(file: &mut Peekable<Bytes<R>>) -> ReadResult {
 fn read_escaped<R: BufRead>(file: &mut Peekable<Bytes<R>>,
                             delimiter: StringOrSymbol)
                             -> Result<String, ReadError> {
-    use std::char;
     let premature_eof = || {
         match delimiter {
             StringOrSymbol::String => ReadError::EOFInString,
@@ -224,8 +241,7 @@ fn read_escaped<R: BufRead>(file: &mut Peekable<Bytes<R>>,
             b'\\' => try!(process_escape(file)),
             b'|' if delimiter == StringOrSymbol::Symbol => break,
             b'"' if delimiter == StringOrSymbol::String => break,
-            normal_char if normal_char <= 0x7F => normal_char as char,
-            unicode_char => try!(char_from_stream_and_byte(file, unicode_char)),
+            normal_char => try!(finish_char(file, normal_char)),
         })
     }
     Ok(buf)
@@ -241,6 +257,25 @@ pub struct EventSource<'a, R: 'a + BufRead> {
     last_chr: Option<u8>,
 }
 
+macro_rules! my_try {
+    ($exp: expr) => {
+        match $exp {
+            Ok(x) => x,
+            Err(x) => return Some(Err(x)),
+        }
+    }
+}
+macro_rules! iter_next {
+    ($exp: expr, $err: expr) => {
+        my_try!(
+            my_try!($exp.next().ok_or($err)).map_err(ReadError::IoError))
+    }
+}
+
+type Item<'a, R> = <EventSource<'a, R> as Iterator>::Item;
+type ItemOption<'a, R> = Option<Item<'a, R>>;
+
+
 impl<'a, R: BufRead> EventSource<'a, R> {
     pub fn new(reader: &'a mut Peekable<Bytes<R>>) -> Self {
         EventSource {
@@ -248,48 +283,100 @@ impl<'a, R: BufRead> EventSource<'a, R> {
             last_chr: Default::default(),
         }
     }
+
+    fn handle_splicing(&mut self, nosplice: Event, splice: Event) -> Item<R> {
+        match self.file.next() {
+            Some(Ok(b'@')) => Ok(splice),
+            Some(Ok(l)) => {
+                self.last_chr = Some(l);
+                Ok(nosplice)
+            }
+            None => {
+                self.last_chr = None;
+                Ok(nosplice)
+            }
+            Some(Err(a)) => Err(ReadError::IoError(a)),
+        }
+    }
+    fn read_hex(&mut self) -> Item<R> {
+        let mut buf = String::new();
+        for i in &mut self.file {
+            match try!(i.map_err(ReadError::IoError)) {
+                i @ b'0'...b'9' | i @ b'A'...b'F' | i @ b'a'...b'f' => buf.push(i as char),
+                _ => return Err(ReadError::BadHexNumber),
+            }
+        }
+        if let Ok(x) = buf.parse() {
+            Ok(Event::Int(x))
+        } else {
+            Err(ReadError::Overflow)
+        }
+    }
+    fn process_sharpsign(&mut self) -> ItemOption<R> {
+        Some(Ok(match iter_next!(self.file, ReadError::EOFAfterSharp) {
+            b'.' => Event::ReadEval,
+            b'\\' => {
+                let byte = iter_next!(self.file, ReadError::EOFAfterSharpBackslash);
+                Event::Char(my_try!(finish_char(self.file, byte)))
+            }
+            b't' => Event::True,
+            b'f' => Event::False,
+            b'x' => my_try!(self.read_hex()),
+            b'\'' => Event::Syntax,
+            b'`' => Event::Quasisyntax,
+            b',' => my_try!(self.handle_splicing(Event::Unsyntax, Event::UnsyntaxSplicing)),
+            b'(' => Event::StartVec,
+            dispatch_char => {
+                return Some(Err(ReadError::BadSharpMacro([dispatch_char as char, '\0'])))
+            }
+        }))
+    }
+    #[cfg_attr(feature = "clippy", allow(while_let_on_iterator))]
+    fn read_symbol(&mut self, start: char) -> Result<Event, ReadError> {
+        let mut buf = String::new();
+        buf.push(start);
+        while let Some(x) = self.file.next() {
+            match try!(x.map_err(ReadError::IoError)) {
+                b'\\' => buf.push(try!(process_escape(self.file))),
+                b'|' => return Err(ReadError::PipeInSymbol),
+                a @ b'"' |
+                a @ b'\'' |
+                a @ b'`' |
+                a @ b',' |
+                a @ b'(' |
+                a @ b'[' |
+                a @ b']' |
+                a @ b')' |
+                a @ b'{' |
+                a @ b'}' => {
+                    self.last_chr = Some(a);
+                    break;
+                }
+                b'\t'...b'\r' | b' ' => break, // ASCII whitespace
+                chr => {
+                    let unicode_char = try!(finish_char(self.file, chr));
+                    if unicode_char.is_whitespace() {
+                        break;
+                    }
+                    buf.push(unicode_char)
+                }
+            }
+        }
+        Ok(if &buf == "." {
+            Event::Dot
+        } else {
+            Event::Symbol(buf)
+        })
+    }
 }
+
+
 impl<'a, R: BufRead> Iterator for EventSource<'a, R> {
     type Item = Result<Event, ReadError>;
-
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let handle_splicing = |file: &mut Peekable<Bytes<R>>, nosplice: Event, splice: Event| {
-            let res1 = {
-                let q = file.peek();
-                match q {
-                    Some(&Ok(b'@')) => (Ok(splice), true),
-                    Some(&Ok(_)) | None => (Ok(nosplice), false),
-                    Some(&Err(ref _a)) => (Err(()), true),
-                }
-            };
-            match res1 {
-                (Ok(good), take_char) => {
-                    if take_char {
-                        file.next();
-                    }
-                    Ok(good)
-                }
-                (Err(()), false) => unreachable!(),
-                (Err(()), true) => Err(file.next().unwrap().unwrap_err()),
-            }
-        };
-
-        macro_rules! my_try {
-            ($exp: expr) => {
-                match $exp {
-                    Ok(x) => x,
-                    Err(x) => return Some(Err(x)),
-                }
-            }
-        }
-
-        macro_rules! iter_next {
-            ($exp: expr, $err: expr) => {
-                my_try!(my_try!($exp.next().ok_or($err)).map_err(|x|ReadError::IoError(x)))
-            }
-        }
         loop {
             let chr = if let Some(chr) = self.last_chr {
+                self.last_chr = None;
                 chr
             } else {
                 let next: Option<Result<u8, io::Error>> = self.file.next();
@@ -304,34 +391,8 @@ impl<'a, R: BufRead> Iterator for EventSource<'a, R> {
                 b'[' => Event::StartList(true),
                 b'\'' => Event::Quote,
                 b'`' => Event::Quasiquote,
-                b',' => {
-                    my_try!(handle_splicing(self.file, Event::Unquote, Event::UnquoteSplicing)
-                                .map_err(ReadError::IoError))
-                }
-                b'#' => {
-                    match iter_next!(self.file, ReadError::EOFAfterSharp) {
-                        b'.' => Event::ReadEval,
-                        b'\\' => {
-                            let byte = iter_next!(self.file, ReadError::EOFAfterSharpBackslash);
-                            Event::Char(my_try!(char_from_stream_and_byte(self.file, byte)))
-                        }
-                        b't' => Event::True,
-                        b'f' => Event::False,
-                        b'\'' => Event::Syntax,
-                        b'`' => Event::Quasisyntax,
-                        b',' => {
-                            my_try!(handle_splicing(self.file,
-                                                    Event::Unsyntax,
-                                                    Event::UnsyntaxSplicing)
-                                        .map_err(ReadError::IoError))
-                        }
-                        b'(' => Event::StartVec,
-                        dispatch_char => {
-                            return Some(Err(ReadError::BadSharpMacro([dispatch_char as char,
-                                                                      '\0'])))
-                        }
-                    }
-                }
+                b',' => my_try!(self.handle_splicing(Event::Unquote, Event::UnquoteSplicing)),
+                b'#' => return self.process_sharpsign(),
                 b')' => Event::EndList(false),
                 b']' => Event::EndList(true),
                 b'"' => Event::Str(my_try!(read_escaped(self.file, StringOrSymbol::String))),
@@ -341,53 +402,184 @@ impl<'a, R: BufRead> Iterator for EventSource<'a, R> {
                     let chr = if val < 0x7F {
                         val as char
                     } else {
-                        my_try!(char_from_stream_and_byte(self.file, val))
+                        my_try!(finish_char(self.file, val))
                     };
                     if chr.is_whitespace() {
                         continue;
                     }
-                    let mut buf = String::new();
-                    buf.push(chr);
-                    loop {
-                        let chr = if let Some(x) = self.file.next() {
-                            my_try!(x.map_err(ReadError::IoError))
-                        } else {
-                            break;
-                        };
-                        match chr {
-                            b'\\' => buf.push(my_try!(process_escape(self.file))),
-                            b'|' => return Some(Err(ReadError::PipeInSymbol)),
-                            a @ b'"' |
-                            a @ b'\'' |
-                            a @ b'`' |
-                            a @ b',' |
-                            a @ b'(' |
-                            a @ b'[' |
-                            a @ b']' |
-                            a @ b')' |
-                            a @ b'{' |
-                            a @ b'}' => {
-                                self.last_chr = Some(a);
-                                break;
-                            }
-                            b'\t'...b'\r' | b' ' => break, // ASCII whitespace
-                            chr => {
-                                let unicode_char = my_try!(char_from_stream_and_byte(self.file,
-                                                                                     chr));
-                                if unicode_char.is_whitespace() {
-                                    break;
-                                }
-                                buf.push(unicode_char)
-                            }
-                        }
-                    }
-                    return Some(Ok(if &buf == "." {
-                        Event::Dot
-                    } else {
-                        Event::Symbol(buf)
-                    }));
+                    return Some(self.read_symbol(chr));
                 }
             }));
         }
+    }
+}
+
+pub fn read<R: BufRead>(s: &mut api::State, r: &mut Peekable<Bytes<R>>) -> Result<(), ReadError> {
+    #[derive(Copy, Clone, Debug)]
+    enum State {
+        List {
+            is_square: bool,
+            depth: usize,
+        },
+        DottedList {
+            is_square: bool,
+            depth: usize,
+        },
+        Vec {
+            depth: usize,
+        },
+        ReaderMacro,
+    }
+    let mut read_stack: Vec<State> = Vec::new();
+    let mut source = EventSource::new(r);
+    loop {
+        let i = match source.next() {
+            None => return Ok(()),
+            Some(x) => x,
+        };
+        match try!(i) {
+            Event::Char(_) => unimplemented!(),
+            Event::Int(x) => {
+                s.push(x).unwrap();
+                // try!(execute_macros(source))
+            }
+            Event::Str(st) => {
+                s.push(st).unwrap();
+                // try!(execute_macros(source))
+            }
+            Event::Symbol(st) => {
+                s.intern(&st).unwrap();
+                // try!(execute_macros(source))
+            }
+            Event::Dot => {
+                let len = read_stack.len().wrapping_sub(1);
+                if let Some(x) = read_stack.get_mut(len) {
+                    match *x {
+                        State::List { depth, is_square } => {
+                            *x = State::DottedList {
+                                depth: depth,
+                                is_square: is_square,
+                            };
+                            continue
+                        }
+                        _ => return Err(ReadError::BadDot),
+                    }
+                } else {
+                    return Err(ReadError::BadDot);
+                }
+                continue;
+            }
+            Event::EndList(is_square) => {
+                if let Some(state) = read_stack.pop() {
+                    match state {
+                        State::DottedList { .. } | State::ReaderMacro =>
+                            return Err(ReadError::UnexpectedCloseParen),
+                        State::Vec { depth } => {
+                            debug_assert!(depth > 0);
+                            if is_square {
+                                return Err(ReadError::BadCloseParen)
+                            } else {
+                                s.vector(1, depth).expect("Out of mem!")
+                            }
+                        }
+                        State::List { is_square: square, depth } => {
+                            if square == is_square {
+                                s.list(depth).expect("Out of mem!")
+                            } else {
+                                return Err(ReadError::BadCloseParen)
+                            }
+                        }
+                    }
+                } else {
+                    return Ok(())
+                }
+            }
+            Event::StartVec => {
+                read_stack.push(State::Vec { depth: 0 });
+                continue;
+            }
+            Event::StartList(x) => {
+                read_stack.push(State::List {
+                    is_square: x,
+                    depth: 0,
+                });
+                continue;
+            }
+            Event::Quote => {
+                try!(s.push("quote".to_owned()).map_err(|()| ReadError::MemLimitExceeded));
+                read_stack.push(State::ReaderMacro);
+                continue;
+            }
+            Event::Quasiquote => {
+                try!(s.push("backquote".to_owned()).map_err(|()| ReadError::MemLimitExceeded));
+                read_stack.push(State::ReaderMacro);
+                continue;
+            }
+            Event::Unquote => {
+                try!(s.push("unquote".to_owned()).map_err(|()| ReadError::MemLimitExceeded));
+                read_stack.push(State::ReaderMacro);
+                continue;
+            }
+            _ => return Err(ReadError::NYI),
+        }
+        let last = read_stack.len().wrapping_sub(1);
+        if let Some(&x) = read_stack.get(last) {
+            match x {
+                State::ReaderMacro => {
+                    try!(s.list(2).map_err(|_| ReadError::MemLimitExceeded));
+                    read_stack.pop();
+                }
+                State::List { depth, is_square } => {
+                    read_stack[last] = State::List {
+                        depth: depth + 1,
+                        is_square: is_square,
+                    }
+                }
+                State::Vec { depth } => {
+                    read_stack[last] = State::Vec {
+                        depth: depth + 1,
+                    }
+                }
+                State::DottedList { depth, is_square } => {
+                    try!(s.list_with_tail(depth).map_err(|_| ReadError::MemLimitExceeded));
+                    if let Some(token) = source.next() {
+                        debug!("Token that must be close paren: {:?}\n", token);
+                        match try!(token) {
+                            Event::EndList(x) if x == is_square => continue,
+                            Event::EndList(_) => return Err(ReadError::ParenMismatch),
+                            _ => return Err(ReadError::MissingCloseParen),
+                        }
+                    } else {
+                        s.drop().expect("Empty stack after list_with_tail?");
+                        return Err(ReadError::BadDot);
+                    }
+                }
+            }
+        } else {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::io::Read;
+    use env_logger;
+    use api;
+    #[test]
+    fn read_from_bytes() {
+        let _ = env_logger::init();
+        let mut interp = api::State::new();
+        let iter = b"(a b c . d)";
+        super::read(&mut interp, &mut iter.bytes().peekable()).unwrap();
+        assert_eq!(interp.len(), 1);
+    }
+
+    #[test]
+    fn read_to_vec() {
+        let _ = env_logger::init();
+        let mut interp = api::State::new();
+        let mut iter = b"#(a b c d)".bytes().peekable();
+        super::read(&mut interp, &mut iter).unwrap();
     }
 }

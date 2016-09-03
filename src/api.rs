@@ -58,6 +58,23 @@ unsafe impl SchemeValue for usize {
     }
 }
 
+unsafe impl SchemeValue for bool {
+    fn to_value(&self, _: &mut alloc::Heap) -> value::Value {
+        value::Value::new(if *self {
+            value::TRUE
+        } else {
+            value::FALSE
+        })
+    }
+    fn of_value(val: &value::Value) -> Result<Self, String> {
+        match val.get() {
+            value::TRUE => Ok(true),
+            value::FALSE => Ok(false),
+            x => Err(format!("Bad bool {:x}", x)),
+        }
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self::new()
@@ -81,6 +98,7 @@ impl State {
         Ok(state.heap.stack.push(new_val))
     }
 
+    /// Pops the top of the stack and converts it to a Rust value.
     pub fn pop<T: SchemeValue>(&mut self) -> Result<T, String> {
         let x = self.state.heap.stack.pop();
         match x {
@@ -89,9 +107,47 @@ impl State {
         }
     }
 
+    /// Pops and discards the top of the stack.
+    pub fn drop(&mut self) -> Result<(), String> {
+        match self.state.heap.stack.pop() {
+            Some(_) => Ok(()),
+            None => Err("Attempt to pop from empty stack".to_owned()),
+        }
+    }
+
+    /// Pushes the cons of the top two values on the stack.
     pub fn cons(&mut self) -> Result<(), String> {
         let len = self.state.heap.stack.len();
-        Ok(self.state.heap.alloc_pair(len - 2, len - 1))
+        debug_assert!(len > 1);
+        self.state.heap.alloc_pair(len - 2, len - 1);
+        Ok(())
+    }
+
+    /// Creates a list whose elements are the top `arg - 1` elements of the
+    /// stack.  The top of the stack becomes the `cdr` of the last pair.
+    pub fn list_with_tail(&mut self, arg: usize) -> Result<(), String> {
+        let len = self.len();
+        if arg > len - 1 {
+            return Err("Attempt to make a list longer than the stack \
+                        is deep".to_owned())
+        }
+        //error!("Stack depth: {:?}, args: {:?}", self.len(), arg);
+        for _ in 0..(arg) {
+            let q = self.len();
+            try!(self.cons());
+            self.store(2, 0);
+            self.state.heap.stack.pop();
+            self.state.heap.stack.pop();
+            debug_assert_eq!(q, self.len() + 1)
+        }
+        debug_assert_eq!(len, self.len() + arg);
+        //error!("Stack depth: {:?}", self.len());
+        Ok(())
+    }
+
+    pub fn list(&mut self, arg: usize) -> Result<(), String> {
+        self.push_nil();
+        self.list_with_tail(arg)
     }
 
     pub fn car(&mut self) -> Result<value::Value, String> {
@@ -166,6 +222,7 @@ impl State {
     }
 
     pub fn vector(&mut self, src: usize, src2: usize) -> Result<(), String> {
+        debug_assert!(src2 >= src);
         Ok(alloc::Heap::alloc_vector(&mut self.state.heap, src, src2))
     }
 
@@ -208,6 +265,14 @@ impl State {
         stack.push(val);
     }
 
+    pub fn len(&self) -> usize {
+        self.state.heap.stack.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn store(&mut self, src: usize, dst: usize) {
         let stack = &mut self.state.heap.stack;
         let len = stack.len();
@@ -233,9 +298,22 @@ mod tests {
         let x: Result<usize, _> = interp.pop();
         assert_eq!(x.unwrap(), 127)
     }
+
+    #[test]
+    fn intern_many_strings() {
+        let _ = env_logger::init();
+        let mut interp = State::new();
+        let x = "Test string!".to_owned();
+        for _ in &[0..1000] {
+            interp.push(x.clone()).unwrap();
+        }
+        for _ in &[0..1000] {
+            assert_eq!(interp.pop(), Ok(x.clone()))
+        }
+    }
     #[test]
     fn intern_many_symbols() {
-        env_logger::init().unwrap();
+        let _ = env_logger::init();
         let mut interp = State::new();
         interp.push_false();
         interp.gc();
@@ -247,7 +325,7 @@ mod tests {
             interp.load(1);// fresh symbol
             assert_eq!(interp.state.heap.stack.len(), 3);
             interp.load(1);// old symbol
-            assert_eq!(interp.state.heap.stack.len(), 4);
+                assert_eq!(interp.state.heap.stack.len(), 4);
             interp.store_global().unwrap(); // stores old symbol into fresh symbol
             assert_eq!(interp.state.heap.stack.len(), 2);
             interp.store(0, 1);
