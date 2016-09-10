@@ -8,8 +8,9 @@
    (assembler)
    (only (guile) parameterize)
    (ice-9 pretty-print))
+(import (srfi :43))
 (include "bytecode.scm")
-#;(include "assembler.scm")
+(include "assembler.scm")
 (include "environment.scm")
 (include "tree-walk.scm")
 (define (bound? sym) (symbol-bound? #f sym))
@@ -34,21 +35,25 @@
 (define (compile-file filename)
   (with-input-from-file filename compile-one-form))
 (define (main args)
-  (for-each compile-file (cdr args))
+  (for-each compile-file args)
+  (assert (bco? bco))
+  (assert (> (bco.len bco) 0))
   (let ((instrs
          (vector-copy (bco.instrs bco)
                       0
                       (bco.len bco)
                       #f)))
-    (pretty-print
+    
+    #;(pretty-print
      (vector
       instrs
       (vector-copy (bco.consts bco)
                       0
                       (bco.consts-len bco)
-                      #f)))))
+                      #f)))
+    (pretty-print (assemble-bytecode instrs))))
     #;(pretty-print
        (assemble-bytecode
        (vector->list instrs)))
 (fluid-set! read-eval? #t)
-(pretty-print (main (command-line)))
+(pretty-print (main '("system.lsp")))
