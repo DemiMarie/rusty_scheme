@@ -8,7 +8,7 @@
         load-constant load-argument load-environment load-global
         load-f load-t load-nil load-0 load-1
         store-environment store-argument store-global
-        branch jump))
+        branch jump closure-extra bind-variable))
 (let ((index 0))
   (for-each
    (lambda (x)
@@ -21,12 +21,15 @@
 (define (assemble-instr port opcode offset label-table)
   #;(pretty-print opcode)
   #;(newline)
-  (assert #f)
-  (if (vector? opcode)
-      (set! opcode (vector->list opcode)))
-  (if (eq? (car opcode) 'label)
-      #f
-      (put-u8 port (hash-table-ref instruction-table (car opcode) #f)))
+  (define (put-u24 opvector)
+    (map (lambda (x)
+           (put-u8 port (logand x 255))
+           (put-u8 port (logand (ash x -8) 255))
+           (put-u8 port (logand (ash x -16) 255)))
+         opvector))
+  (assert (pair? opcode))
+  (if (not (eq? (car opcode) 'label))
+      (put-u8 port (hash-table-ref instruction-table (car opcode))))
   ;;(assert #f)
   (let ((op-vector
          (case (car opcode)
@@ -34,33 +37,49 @@
                     cons car cdr
                     vector-ref vector-set!)
             '(0))
-           ((load-global load-constant load-argument load-environment)
+           ((load-global load-constant load-argument load-environment
+                         bind-variable)
             (cdr opcode))
-           ((jump branch)
+           ((closure jump branch)
             (let* ((opcode-list (cdr opcode))
                    (label-num
                     (begin
-                      (assert (null? (cdr opcode-list)))
                       (car opcode-list)))
                    (label-list
-                    (or (hash-ref label-table label-num #f) (list #f)))
+                    (or (hash-table-ref label-table label-num (lambda ()
+                                                                (list #f)))))
                    (tail (cdr label-list)))
               (set-cdr! label-list (cons label-num tail))
-              (opcode-list)))
+              (case (car opcode)
+                ((closure)
+                 (let ((fixed-args (car opcode-list)))
+                   (assert (<= fixed-args (ash 1 23)))
+                   (let
+                       ((new-list
+                         (list
+                          (logior fixed-args
+                                  (ash (if (cadr opcode-list) 0 1) 24)))))
+
+                     (put-u24 new-list)
+                     #f)
+                   (put-u8 port
+                           (hash-table-ref instruction-table 'closure-extra))
+                   (cddr opcode-list)))
+                ((branch jump) opcode-list)
+                (else (assert #f)))))
            ((label)
             ;; Mark up a label
             (let* ((label-num (cadr opcode))
                    (label-list
-                    (or (hash-ref label-table label-num #f) (list #f))))
+                    (or (hash-table-ref label-table label-num
+                                        (lambda () (list #f))))))
               (assert (not (car label-list)))
               (set-car! label-list offset)
               '()))
            (else
             ;; Can't happen
             (assert (not "Internal error: assembling invalid opcode"))))))
-    (put-bytevector
-     port
-     (uint-list->bytevector opvector (endianness little) 3)))
+    (put-u24 op-vector))
    (if (eq? (car opcode) 'label)
        (+ offset 4)
        offset))
@@ -81,12 +100,16 @@
     (let-values (((port to-bytevector)
                   (open-bytevector-output-port)))
 
-      (define (assemble . args)
-        (pretty-print args)
-        (assert (= (length args) 2))
-        (let ((offset (car args))
-              (instr (cadr args)))
-          (assemble-instr port instr offset table)))
+      (define (assemble index offset instr)
+        (assert (integer? index))
+        (assert (integer? offset))
+        (pretty-print index)
+        (newline)
+        (pretty-print offset)
+        (newline)
+        (pretty-print instr)
+        (newline)
+        (assemble-instr port instr offset table))
       #;(define (fold kons knil arg)
         (if (null? arg)
           knil

@@ -29,6 +29,8 @@
 
 extern crate env_logger;
 
+mod pool;
+
 use interp;
 use value;
 use alloc;

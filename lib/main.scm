@@ -43,6 +43,9 @@
                       0
                       (bco.len bco)
                       #f)))
+    (display "----BEGIN INSTRS----\n")
+    (pretty-print instrs)
+    (newline)
     
     #;(pretty-print
      (vector
