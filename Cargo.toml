@@ -1,19 +1,7 @@
 [package]
-name = "rusty_scheme"
+name = "rustc_bug_repro"
 version = "0.1.0"
 authors = ["Demi Marie Obenour <demiobenour@gmail.com>"]
 repository = "https://github.com/DemiMarie/RustyScheme"
 readme = "README.md"
 license = "MIT/Apache 2.0"
-keywords = ["scheme", "interpreter", "scripting"]
-
-[dependencies]
-libc = "*"
-log = "*"
-env_logger = "*"
-
-[features]
-default = ["memcpy-gc"]
-memcpy-gc = []
-debug-logging = []
-clippy = []
