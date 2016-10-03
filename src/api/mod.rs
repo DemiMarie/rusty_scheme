@@ -315,6 +315,7 @@ mod tests {
     }
     #[test]
     fn intern_many_symbols() {
+        assert!(false);
         let _ = env_logger::init();
         let mut interp = State::new();
         interp.push_false();
