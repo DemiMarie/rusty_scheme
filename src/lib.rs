@@ -2,6 +2,7 @@
 #![feature(static_recursion)]
 #![allow(dead_code)]
 #![deny(warnings)]
+#![cfg_attr(feature="clippy", allow(diverging_sub_expression))]
 
 #[macro_use]
 extern crate log;
